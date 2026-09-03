@@ -1,0 +1,22 @@
+[package]
+name = "sev-snp"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.87"
+readme = "README.md"
+authors = ["Hacer-Bark <hacer.bark@proton.me>"]
+description = "Safe, complete Rust bindings for the Linux AMD SEV-SNP guest API"
+license = "0BSD"
+repository = "https://github.com/hacer-bark/sev-snp"
+documentation = "https://docs.rs/sev-snp"
+categories = ["api-bindings", "cryptography", "hardware-support"]
+keywords = ["sev", "snp", "attestation", "amd", "confidential-computing"]
+
+[dependencies]
+zeroize = { version = "1", default-features = false }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+rand = "0.10"
