@@ -14,8 +14,14 @@
 //!
 //! Each request gets a fresh directory, removed when the call returns, so no
 //! state carries between calls.
+//!
+//! Because the interface is shared, [`ConfigFs::open`] refuses to attach to any
+//! provider but `sev_guest`. Without that check a TDX guest — where the same
+//! path yields a quote several kilobytes long whose first word reads as a very
+//! large version number — would hand back a blob that parses as an SEV-SNP
+//! report and answers every accessor with bytes lifted from a TDX quote.
 
-use super::{GuestBackend, ReportRequest, Transport};
+use super::{GuestBackend, ReportRequest, Transport, verify_answers};
 use crate::certs::{CertTable, ExtendedReport};
 use crate::error::{Error, Result};
 #[cfg(feature = "sev-guest")]
@@ -28,6 +34,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Where the kernel mounts the TSM report interface.
 pub const REPORT_ROOT: &str = "/sys/kernel/config/tsm/report";
+
+/// The provider name the SEV-SNP driver registers with the TSM core.
+pub const PROVIDER: &str = "sev_guest";
 
 /// Whether the configfs-TSM report interface is present.
 #[must_use]
@@ -47,29 +56,41 @@ impl ConfigFs {
     /// # Errors
     ///
     /// Returns [`Error::NoBackend`] if the kernel does not expose the
-    /// configfs-TSM report directory.
+    /// configfs-TSM report directory, or [`Error::WrongProvider`] if it does
+    /// but belongs to another confidential-computing architecture.
     pub fn open() -> Result<Self> {
         Self::open_at(REPORT_ROOT)
     }
 
     /// Opens the interface at a non-standard mount point.
     ///
+    /// The provider is checked here, once, so that no later call has to wonder
+    /// what architecture it is talking to.
+    ///
     /// # Errors
     ///
-    /// Returns [`Error::NoBackend`] if `root` is not a directory.
+    /// Returns [`Error::NoBackend`] if `root` is not a directory,
+    /// [`Error::WrongProvider`] if the provider is not [`PROVIDER`], or
+    /// [`Error::Io`] if the provider cannot be read at all — an interface that
+    /// will not say what it is does not get to serve attestation reports.
     pub fn open_at(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
         if !root.is_dir() {
             return Err(Error::NoBackend);
         }
-        Ok(Self { root })
+        let this = Self { root };
+        let provider = this.provider()?;
+        if provider != PROVIDER {
+            return Err(Error::WrongProvider(provider));
+        }
+        Ok(this)
     }
 
-    /// The provider name the kernel reports, such as `sev_guest`.
+    /// The provider name the kernel reports.
     ///
-    /// Worth checking before trusting a report: configfs-TSM is shared with
-    /// other confidential-computing architectures, and on a TDX guest the same
-    /// path yields a TDX quote rather than an SEV-SNP report.
+    /// Always [`PROVIDER`] on a handle that opened successfully, since
+    /// [`open_at`](Self::open_at) refuses anything else. Exposed because a
+    /// caller diagnosing a [`Error::WrongProvider`] wants to see the name.
     ///
     /// # Errors
     ///
@@ -141,13 +162,17 @@ impl GuestBackend for ConfigFs {
 
     fn report(&self, request: &ReportRequest) -> Result<AttestationReport> {
         let (outblob, _) = self.run(request)?;
-        AttestationReport::parse(&outblob)
+        let report = AttestationReport::parse(&outblob)?;
+        verify_answers(request, &report)?;
+        Ok(report)
     }
 
     fn extended_report(&self, request: &ReportRequest) -> Result<ExtendedReport> {
         let (outblob, auxblob) = self.run(request)?;
+        let report = AttestationReport::parse(&outblob)?;
+        verify_answers(request, &report)?;
         Ok(ExtendedReport {
-            report: AttestationReport::parse(&outblob)?,
+            report,
             certificates: CertTable::parse(&auxblob)?,
         })
     }

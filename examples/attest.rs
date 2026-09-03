@@ -30,7 +30,10 @@ fn main() -> Result<(), sev_snp::Error> {
     // A fresh nonce is what makes the report non-replayable.
     let nonce: [u8; 64] = rand::rng().random();
     let report = firmware.report(&nonce)?;
-    assert_eq!(report.report_data(), nonce, "report is bound to our nonce");
+    // The crate rejects a report that is not bound to the nonce, so reaching
+    // here already proves it; assert anyway, since this example is also the
+    // place someone looks to see what the guarantee is.
+    assert_eq!(report.report_data(), &nonce, "report is bound to our nonce");
 
     println!("\n{report:#?}");
     if let Some(parts) = report.reported_tcb_parts() {

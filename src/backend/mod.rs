@@ -28,7 +28,7 @@ pub mod configfs;
 pub mod ioctl;
 
 use crate::certs::ExtendedReport;
-use crate::error::Result;
+use crate::error::{Error, Result};
 #[cfg(feature = "sev-guest")]
 use crate::key::{DerivedKey, KeyRequest};
 use crate::report::AttestationReport;
@@ -122,7 +122,7 @@ impl From<&[u8; 64]> for ReportRequest {
 /// A kernel interface capable of issuing SEV-SNP guest requests.
 ///
 /// Implemented by [`configfs::ConfigFs`] and [`ioctl::SevGuest`]. Operations a
-/// transport does not implement return [`Error::Unsupported`](crate::Error::Unsupported)
+/// transport does not implement return [`Error::Unsupported`]
 /// rather than panicking or silently degrading.
 pub trait GuestBackend: std::fmt::Debug + Send + Sync {
     /// Which interface this backend speaks.
@@ -130,12 +130,15 @@ pub trait GuestBackend: std::fmt::Debug + Send + Sync {
 
     /// Requests a signed attestation report.
     ///
+    /// Implementations verify that the report answers the request before
+    /// returning it; see [`Error::Mismatch`].
+    ///
     /// # Errors
     ///
-    /// Returns [`Error::Firmware`](crate::Error::Firmware) or
-    /// [`Error::Vmm`](crate::Error::Vmm) if the request was rejected,
-    /// [`Error::Io`](crate::Error::Io) if the kernel call failed, or
-    /// [`Error::Parse`](crate::Error::Parse) if the response was malformed.
+    /// Returns [`Error::Firmware`] or
+    /// [`Error::Vmm`] if the request was rejected,
+    /// [`Error::Io`] if the kernel call failed, or
+    /// [`Error::Parse`] if the response was malformed.
     fn report(&self, request: &ReportRequest) -> Result<AttestationReport>;
 
     /// Requests a report together with the host-provisioned certificate chain.
@@ -143,7 +146,7 @@ pub trait GuestBackend: std::fmt::Debug + Send + Sync {
     /// # Errors
     ///
     /// As [`report`](Self::report), and additionally
-    /// [`Error::Parse`](crate::Error::Parse) if the certificate table does not
+    /// [`Error::Parse`] if the certificate table does not
     /// describe bodies that lie within the blob the host returned.
     fn extended_report(&self, request: &ReportRequest) -> Result<ExtendedReport>;
 
@@ -151,14 +154,41 @@ pub trait GuestBackend: std::fmt::Debug + Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Unsupported`](crate::Error::Unsupported) on a transport
+    /// Returns [`Error::Unsupported`] on a transport
     /// without a key derivation interface,
-    /// [`Error::InvalidArgument`](crate::Error::InvalidArgument) for a VMPL
-    /// outside `0..=3`, or [`Error::Firmware`](crate::Error::Firmware) if the
+    /// [`Error::InvalidArgument`] for a VMPL
+    /// outside `0..=3`, or [`Error::Firmware`] if the
     /// secure processor rejected the binding.
     #[cfg(feature = "sev-guest")]
     #[cfg_attr(docsrs, doc(cfg(feature = "sev-guest")))]
     fn derive_key(&self, request: &KeyRequest) -> Result<DerivedKey>;
+}
+
+/// Checks that a report actually answers the request that produced it.
+///
+/// The firmware copies `REPORT_DATA` into the report verbatim and records the
+/// privilege level it signed at, so both are known in advance. Comparing them
+/// is the one end-to-end check available to a guest without doing any
+/// cryptography, and it catches every way a response can belong to somebody
+/// else: a concurrent writer on a transport with no generation counter, a
+/// cached or replayed response, or a provider that answered with something
+/// other than an SEV-SNP report.
+///
+/// # Errors
+///
+/// Returns [`Error::Mismatch`] if either field disagrees with the request.
+pub(crate) fn verify_answers(request: &ReportRequest, report: &AttestationReport) -> Result<()> {
+    if *report.report_data() != request.data {
+        return Err(Error::Mismatch(
+            "report data is not the nonce that was requested",
+        ));
+    }
+    if request.vmpl.is_some_and(|vmpl| vmpl != report.vmpl()) {
+        return Err(Error::Mismatch(
+            "report was signed at a different privilege level",
+        ));
+    }
+    Ok(())
 }
 
 /// Whether any usable guest interface exists on this system.

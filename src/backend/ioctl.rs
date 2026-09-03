@@ -5,8 +5,20 @@
 //! own status codes instead of collapsing them into an `errno`.
 //!
 //! The device is mode 0600, so this transport normally requires root.
+//!
+//! # Retries are not free
+//!
+//! Guest requests are authenticated with a per-VMPL key, the VMPCK, under a
+//! message sequence number that must never repeat. The driver therefore
+//! *disables* the VMPCK for the rest of the boot whenever it cannot be certain
+//! the sequence number advanced correctly — after which every guest request
+//! from this VM fails until it is relaunched, with no way to re-enable it.
+//! A caller retrying a failed request in a loop is spending a finite,
+//! unrecoverable resource. Retry only the conditions the kernel marks as
+//! transient, which is what [`Firmware::report`](crate::Firmware::report) does,
+//! and never in an unbounded loop.
 
-use super::{GuestBackend, ReportRequest, Transport};
+use super::{GuestBackend, ReportRequest, Transport, verify_answers};
 use crate::certs::{CertTable, ExtendedReport};
 use crate::error::{Error, FirmwareError, ParseError, Result, VmmError, from_exitinfo2};
 use crate::key::{DerivedKey, KeyRequest};
@@ -15,6 +27,7 @@ use crate::{u32_at, widen};
 use std::fs::{File, OpenOptions};
 use std::os::fd::{AsRawFd, RawFd};
 use std::path::Path;
+use zeroize::Zeroizing;
 
 /// The guest device node.
 pub const DEVICE: &str = "/dev/sev-guest";
@@ -56,6 +69,13 @@ const EXT_CERTS_LEN_FIELD: usize = 104;
 const CERT_GRANULARITY: usize = 4096;
 /// The kernel refuses certificate buffers larger than this.
 const CERT_MAX: usize = 0x4000;
+
+// `fill` zero-pads, and therefore silently truncates anything longer than the
+// buffer it is filling. These pin every payload it is asked to write, so that
+// growing a request without growing its buffer fails to compile rather than
+// sending the firmware a quietly clipped structure.
+const _: () = assert!(64 + size_of::<u32>() <= REPORT_REQ_LEN);
+const _: () = assert!(REPORT_REQ_LEN + size_of::<u64>() + size_of::<u32>() <= EXT_REPORT_REQ_LEN);
 
 /// `struct snp_guest_request_ioctl` from `<linux/sev-guest.h>`.
 ///
@@ -227,6 +247,9 @@ impl SevGuest {
 }
 
 /// Writes an iterator of bytes into a fixed-size buffer, zero-padding the rest.
+///
+/// Anything past `N` bytes is dropped, so every call site is guarded by a
+/// `const` assertion that its payload fits.
 fn fill<const N: usize>(bytes: impl IntoIterator<Item = u8>) -> [u8; N] {
     let mut out = [0u8; N];
     for (dst, byte) in out.iter_mut().zip(bytes) {
@@ -244,7 +267,9 @@ impl GuestBackend for SevGuest {
         let mut req = Self::report_req(request);
         let mut resp = vec![0u8; REPORT_RESP_LEN];
         self.issue(SNP_GET_REPORT, &mut req, &mut resp)?;
-        Self::parse_response(&resp)
+        let report = Self::parse_response(&resp)?;
+        verify_answers(request, &report)?;
+        Ok(report)
     }
 
     fn extended_report(&self, request: &ReportRequest) -> Result<ExtendedReport> {
@@ -270,8 +295,10 @@ impl GuestBackend for SevGuest {
             Err(e) => return Err(e),
         }
 
+        let report = Self::parse_response(&resp)?;
+        verify_answers(request, &report)?;
         Ok(ExtendedReport {
-            report: Self::parse_response(&resp)?,
+            report,
             certificates: CertTable::parse(&certs)?,
         })
     }
@@ -280,19 +307,18 @@ impl GuestBackend for SevGuest {
         request.validate()?;
 
         let mut req = request.to_wire();
-        let mut resp = [0u8; 64];
-        self.issue(SNP_GET_DERIVED_KEY, &mut req, &mut resp)?;
+        let mut resp = Zeroizing::new([0u8; 64]);
+        self.issue(SNP_GET_DERIVED_KEY, &mut req, resp.as_mut_slice())?;
 
-        let status = u32_at(&resp, 0).unwrap_or(u32::MAX);
+        let status = u32_at(resp.as_slice(), 0).unwrap_or(u32::MAX);
         if status != 0 {
             return Err(Error::Firmware(FirmwareError::from_raw(status)));
         }
 
-        let key = crate::bytes_at::<{ DerivedKey::LEN }>(&resp, RESP_PAYLOAD)
-            .ok_or(Error::InvalidArgument("derived key response was truncated"))?;
-        // The response buffer holds a copy of the key; wipe it before it goes
-        // back to the allocator.
-        zeroize::Zeroize::zeroize(&mut resp[..]);
-        Ok(DerivedKey::from_bytes(key))
+        let key = Zeroizing::new(
+            crate::bytes_at::<{ DerivedKey::LEN }>(resp.as_slice(), RESP_PAYLOAD)
+                .ok_or(Error::InvalidArgument("derived key response was truncated"))?,
+        );
+        Ok(DerivedKey::from_bytes(*key))
     }
 }

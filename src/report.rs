@@ -36,6 +36,16 @@ impl AttestationReport {
     /// Lowest report version this crate can interpret.
     pub const MIN_VERSION: u32 = 2;
 
+    /// Highest report version this crate will accept.
+    ///
+    /// Newer revisions only claim reserved space, so a version this crate has
+    /// never heard of still parses correctly — but the field has to be bounded
+    /// by *something*, or any 1184-byte blob whose first word happens to be
+    /// large passes for a report. AMD is at version 5; the headroom here
+    /// absorbs the next several revisions without pretending a TDX quote
+    /// (whose header reads as version 131076) is an SEV-SNP report.
+    pub const MAX_VERSION: u32 = 16;
+
     /// Parses a report from its ABI representation.
     ///
     /// Newer versions than this crate knows about are accepted: unrecognised
@@ -45,7 +55,8 @@ impl AttestationReport {
     ///
     /// Returns [`ParseError::TooShort`] if `bytes` is smaller than
     /// [`Self::SIZE`], or [`ParseError::UnsupportedReportVersion`] if the
-    /// report announces a version below [`Self::MIN_VERSION`].
+    /// report announces a version outside
+    /// [`Self::MIN_VERSION`] to [`Self::MAX_VERSION`] inclusive.
     pub fn parse(bytes: &[u8]) -> Result<Self> {
         let raw = bytes_at::<{ Self::SIZE }>(bytes, 0).ok_or(ParseError::TooShort {
             what: "attestation report",
@@ -54,10 +65,9 @@ impl AttestationReport {
         })?;
 
         let report = Self { raw };
-        if report.version() < Self::MIN_VERSION {
-            return Err(Error::Parse(ParseError::UnsupportedReportVersion(
-                report.version(),
-            )));
+        let version = report.version();
+        if !(Self::MIN_VERSION..=Self::MAX_VERSION).contains(&version) {
+            return Err(Error::Parse(ParseError::UnsupportedReportVersion(version)));
         }
         Ok(report)
     }
@@ -80,63 +90,64 @@ impl AttestationReport {
         }
     }
 
-    /// Report structure version, at least [`Self::MIN_VERSION`].
+    /// Report structure version, within
+    /// [`Self::MIN_VERSION`] to [`Self::MAX_VERSION`] inclusive.
     #[must_use]
-    pub fn version(&self) -> u32 {
+    pub const fn version(&self) -> u32 {
         self.u32_at(0x00)
     }
 
     /// Guest security version number supplied in the ID block at launch.
     #[must_use]
-    pub fn guest_svn(&self) -> u32 {
+    pub const fn guest_svn(&self) -> u32 {
         self.u32_at(0x04)
     }
 
     /// The launch policy the guest owner pinned at VM start.
     #[must_use]
-    pub fn policy(&self) -> GuestPolicy {
+    pub const fn policy(&self) -> GuestPolicy {
         GuestPolicy::from_raw(self.u64_at(0x08))
     }
 
     /// Family ID from the ID block, chosen by the guest owner.
     #[must_use]
-    pub fn family_id(&self) -> [u8; 16] {
+    pub const fn family_id(&self) -> &[u8; 16] {
         self.field(0x10)
     }
 
     /// Image ID from the ID block, chosen by the guest owner.
     #[must_use]
-    pub fn image_id(&self) -> [u8; 16] {
+    pub const fn image_id(&self) -> &[u8; 16] {
         self.field(0x20)
     }
 
     /// The VMPL the report was requested at.
     #[must_use]
-    pub fn vmpl(&self) -> u32 {
+    pub const fn vmpl(&self) -> u32 {
         self.u32_at(0x30)
     }
 
     /// Algorithm used to produce [`signature`](Self::signature).
     #[must_use]
-    pub fn signature_algo(&self) -> SignatureAlgo {
+    pub const fn signature_algo(&self) -> SignatureAlgo {
         SignatureAlgo::from_raw(self.u32_at(0x34))
     }
 
     /// TCB version currently running on the platform.
     #[must_use]
-    pub fn current_tcb(&self) -> TcbVersion {
+    pub const fn current_tcb(&self) -> TcbVersion {
         TcbVersion::from_raw(self.u64_at(0x38))
     }
 
     /// Host platform configuration.
     #[must_use]
-    pub fn platform_info(&self) -> PlatformInfo {
+    pub const fn platform_info(&self) -> PlatformInfo {
         PlatformInfo::from_raw(self.u64_at(0x40))
     }
 
     /// How the report was signed and what the host chose to reveal.
     #[must_use]
-    pub fn signer_info(&self) -> SignerInfo {
+    pub const fn signer_info(&self) -> SignerInfo {
         SignerInfo::from_raw(self.u32_at(0x48))
     }
 
@@ -145,43 +156,43 @@ impl AttestationReport {
     /// This is the field that makes a report fresh: put a verifier-supplied
     /// nonce, or a hash of a public key, here.
     #[must_use]
-    pub fn report_data(&self) -> [u8; 64] {
+    pub const fn report_data(&self) -> &[u8; 64] {
         self.field(0x50)
     }
 
     /// SHA-384 launch measurement of the guest's initial memory image.
     #[must_use]
-    pub fn measurement(&self) -> [u8; 48] {
+    pub const fn measurement(&self) -> &[u8; 48] {
         self.field(0x90)
     }
 
     /// Data supplied by the host at launch. Not guest-controlled.
     #[must_use]
-    pub fn host_data(&self) -> [u8; 32] {
+    pub const fn host_data(&self) -> &[u8; 32] {
         self.field(0xC0)
     }
 
     /// SHA-384 digest of the ID public key that signed the ID block.
     #[must_use]
-    pub fn id_key_digest(&self) -> [u8; 48] {
+    pub const fn id_key_digest(&self) -> &[u8; 48] {
         self.field(0xE0)
     }
 
     /// SHA-384 digest of the author public key that signed the ID key.
     #[must_use]
-    pub fn author_key_digest(&self) -> [u8; 48] {
+    pub const fn author_key_digest(&self) -> &[u8; 48] {
         self.field(0x110)
     }
 
     /// Identifier for this guest, stable across reports from the same VM.
     #[must_use]
-    pub fn report_id(&self) -> [u8; 32] {
+    pub const fn report_id(&self) -> &[u8; 32] {
         self.field(0x140)
     }
 
     /// Report ID of this guest's migration agent.
     #[must_use]
-    pub fn report_id_ma(&self) -> [u8; 32] {
+    pub const fn report_id_ma(&self) -> &[u8; 32] {
         self.field(0x160)
     }
 
@@ -190,14 +201,14 @@ impl AttestationReport {
     /// This, not [`current_tcb`](Self::current_tcb), selects the VCEK that
     /// verifies the signature.
     #[must_use]
-    pub fn reported_tcb(&self) -> TcbVersion {
+    pub const fn reported_tcb(&self) -> TcbVersion {
         TcbVersion::from_raw(self.u64_at(0x180))
     }
 
     /// Processor family, model and stepping. Present from report version 3.
     #[must_use]
     pub fn cpuid_fms(&self) -> Option<Fms> {
-        let [family, model, stepping] = self.field::<3>(0x188);
+        let &[family, model, stepping] = self.field::<3>(0x188);
         (self.version() >= 3).then(|| Fms::new(family, model, stepping))
     }
 
@@ -216,20 +227,20 @@ impl AttestationReport {
     /// Reads as all zeros when [`SignerInfo::chip_key_masked`] is set, or when
     /// the report was signed by a VLEK rather than a VCEK.
     #[must_use]
-    pub fn chip_id(&self) -> [u8; 64] {
+    pub const fn chip_id(&self) -> &[u8; 64] {
         self.field(0x1A0)
     }
 
     /// The lowest TCB version the platform can be rolled back to.
     #[must_use]
-    pub fn committed_tcb(&self) -> TcbVersion {
+    pub const fn committed_tcb(&self) -> TcbVersion {
         TcbVersion::from_raw(self.u64_at(0x1E0))
     }
 
     /// Firmware version currently running.
     #[must_use]
-    pub fn current_firmware(&self) -> FirmwareVersion {
-        let [build, minor, major] = self.field::<3>(0x1E8);
+    pub const fn current_firmware(&self) -> FirmwareVersion {
+        let &[build, minor, major] = self.field::<3>(0x1E8);
         FirmwareVersion {
             major,
             minor,
@@ -239,8 +250,8 @@ impl AttestationReport {
 
     /// Firmware version the platform has committed to.
     #[must_use]
-    pub fn committed_firmware(&self) -> FirmwareVersion {
-        let [build, minor, major] = self.field::<3>(0x1EC);
+    pub const fn committed_firmware(&self) -> FirmwareVersion {
+        let &[build, minor, major] = self.field::<3>(0x1EC);
         FirmwareVersion {
             major,
             minor,
@@ -250,7 +261,7 @@ impl AttestationReport {
 
     /// The TCB version in effect when this guest was launched.
     #[must_use]
-    pub fn launch_tcb(&self) -> TcbVersion {
+    pub const fn launch_tcb(&self) -> TcbVersion {
         TcbVersion::from_raw(self.u64_at(0x1F0))
     }
 
@@ -272,7 +283,7 @@ impl AttestationReport {
 
     /// The raw 512-byte signature field.
     #[must_use]
-    pub fn signature(&self) -> [u8; 512] {
+    pub const fn signature(&self) -> &[u8; 512] {
         self.field(0x2A0)
     }
 
@@ -281,7 +292,7 @@ impl AttestationReport {
     /// Returns `None` unless [`signature_algo`](Self::signature_algo) is
     /// [`SignatureAlgo::EcdsaP384Sha384`].
     #[must_use]
-    pub fn ecdsa_signature(&self) -> Option<EcdsaP384Signature> {
+    pub fn ecdsa_signature(&self) -> Option<EcdsaP384Signature<'_>> {
         if self.signature_algo() == SignatureAlgo::EcdsaP384Sha384 {
             Some(EcdsaP384Signature {
                 r: self.field(0x2A0),
@@ -302,26 +313,29 @@ impl AttestationReport {
         self.product().map(|p| self.reported_tcb().decode(p))
     }
 
-    fn u32_at(&self, offset: usize) -> u32 {
-        u32::from_le_bytes(self.field(offset))
+    const fn u32_at(&self, offset: usize) -> u32 {
+        u32::from_le_bytes(*self.field(offset))
     }
 
-    fn u64_at(&self, offset: usize) -> u64 {
-        u64::from_le_bytes(self.field(offset))
+    const fn u64_at(&self, offset: usize) -> u64 {
+        u64::from_le_bytes(*self.field(offset))
     }
 
-    /// Copies a fixed-size field out of the report.
+    /// Borrows a fixed-size field out of the report.
     ///
     /// Every offset used here is a compile-time constant that lies inside a
-    /// report, so the copy is always complete; writing it as a bounded zip
-    /// rather than a slice keeps the function total instead of panicking on a
-    /// hypothetical bad offset.
-    fn field<const N: usize>(&self, offset: usize) -> [u8; N] {
-        let mut out = [0u8; N];
-        for (dst, src) in out.iter_mut().zip(self.raw.iter().skip(offset)) {
-            *dst = *src;
+    /// report, so the slice always exists. Falling back to a static zero field
+    /// rather than indexing keeps the function total: an out-of-range offset
+    /// would be a bug in this module, not a reason to panic in a caller's
+    /// attestation path.
+    const fn field<const N: usize>(&self, offset: usize) -> &[u8; N] {
+        match self.raw.split_at_checked(offset) {
+            Some((_, tail)) => match tail.first_chunk::<N>() {
+                Some(field) => field,
+                None => const { &[0u8; N] },
+            },
+            None => const { &[0u8; N] },
         }
-        out
     }
 }
 
@@ -339,11 +353,11 @@ impl fmt::Debug for AttestationReport {
             .field("launch_tcb", &self.launch_tcb())
             .field("platform_info", &self.platform_info())
             .field("signer_info", &self.signer_info())
-            .field("measurement", &Hex(&self.measurement()))
-            .field("report_data", &Hex(&self.report_data()))
-            .field("host_data", &Hex(&self.host_data()))
-            .field("report_id", &Hex(&self.report_id()))
-            .field("chip_id", &Hex(&self.chip_id()))
+            .field("measurement", &Hex(self.measurement()))
+            .field("report_data", &Hex(self.report_data()))
+            .field("host_data", &Hex(self.host_data()))
+            .field("report_id", &Hex(self.report_id()))
+            .field("chip_id", &Hex(self.chip_id()))
             .field("current_firmware", &self.current_firmware())
             .field("committed_firmware", &self.committed_firmware());
         if let Some(fms) = self.cpuid_fms() {
@@ -392,29 +406,32 @@ impl fmt::Display for FirmwareVersion {
 /// Both components are 72-byte little-endian fields, which is not what most
 /// signature verifiers want; [`r_be`](Self::r_be) and [`s_be`](Self::s_be)
 /// convert to the 48-byte big-endian integers used by SEC1 and RFC 5480.
+///
+/// Borrowed from the report rather than copied, so decoding a signature costs
+/// nothing until a component is actually converted.
 #[derive(Clone, Copy)]
-pub struct EcdsaP384Signature {
+pub struct EcdsaP384Signature<'a> {
     /// The `r` component, little-endian, zero-padded to 72 bytes.
-    pub r: [u8; 72],
+    pub r: &'a [u8; 72],
     /// The `s` component, little-endian, zero-padded to 72 bytes.
-    pub s: [u8; 72],
+    pub s: &'a [u8; 72],
 }
 
-impl EcdsaP384Signature {
+impl EcdsaP384Signature<'_> {
     /// The `r` component as a 48-byte big-endian integer.
     #[must_use]
     pub fn r_be(&self) -> [u8; 48] {
-        to_be_48(&self.r)
+        to_be_48(self.r)
     }
 
     /// The `s` component as a 48-byte big-endian integer.
     #[must_use]
     pub fn s_be(&self) -> [u8; 48] {
-        to_be_48(&self.s)
+        to_be_48(self.s)
     }
 }
 
-impl fmt::Debug for EcdsaP384Signature {
+impl fmt::Debug for EcdsaP384Signature<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EcdsaP384Signature")
             .field("r", &Hex(&self.r_be()))
@@ -429,9 +446,7 @@ impl fmt::Debug for EcdsaP384Signature {
 /// checked, because a non-zero value there would already have failed signature
 /// verification.
 fn to_be_48(le: &[u8; 72]) -> [u8; 48] {
-    let mut out = [0u8; 48];
-    for (dst, src) in out.iter_mut().zip(le.iter().take(48).rev()) {
-        *dst = *src;
-    }
+    let mut out = *le.first_chunk::<48>().unwrap_or(&[0u8; 48]);
+    out.reverse();
     out
 }

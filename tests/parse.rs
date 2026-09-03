@@ -66,15 +66,41 @@ fn parses_a_real_v5_report_from_a_zen3_machine() -> Fallible {
 }
 
 #[test]
-fn report_rejects_short_and_ancient_inputs() -> Fallible {
+fn report_rejects_short_ancient_and_foreign_inputs() -> Fallible {
     let truncated = MILAN_V5.get(..AttestationReport::SIZE - 1).ok_or("short")?;
     assert!(AttestationReport::parse(truncated).is_err());
 
-    let mut version_1 = MILAN_V5.to_vec();
-    for (slot, byte) in version_1.iter_mut().zip(1u32.to_le_bytes()) {
+    let with_version = |version: u32| {
+        let mut bytes = MILAN_V5.to_vec();
+        for (slot, byte) in bytes.iter_mut().zip(version.to_le_bytes()) {
+            *slot = byte;
+        }
+        bytes
+    };
+
+    assert!(
+        AttestationReport::parse(&with_version(1)).is_err(),
+        "ancient"
+    );
+    assert!(
+        AttestationReport::parse(&with_version(AttestationReport::MAX_VERSION)).is_ok(),
+        "the bound is inclusive, so firmware newer than this crate still parses"
+    );
+
+    // A TDX quote is several kilobytes long and its header reads as a `u32`
+    // version of 131076. Without an upper bound it would parse as a report and
+    // answer every accessor with bytes lifted from somebody else's attestation.
+    let mut tdx_quote = vec![0u8; 5000];
+    for (slot, byte) in tdx_quote.iter_mut().zip(4u16.to_le_bytes()) {
         *slot = byte;
     }
-    assert!(AttestationReport::parse(&version_1).is_err());
+    for (slot, byte) in tdx_quote.iter_mut().skip(2).zip(2u16.to_le_bytes()) {
+        *slot = byte;
+    }
+    assert!(
+        AttestationReport::parse(&tdx_quote).is_err(),
+        "a TDX quote is not an SEV-SNP report"
+    );
     Ok(())
 }
 
@@ -150,4 +176,24 @@ fn cert_table_reads_entries_and_rejects_out_of_bounds_offsets() -> Fallible {
 
     assert!(CertTable::parse(&[])?.is_empty());
     Ok(())
+}
+
+#[test]
+fn cert_table_refuses_blobs_and_entry_counts_beyond_its_limits() {
+    // A host-supplied blob is attacker-controlled on the size axis too.
+    assert!(
+        CertTable::parse(&vec![0u8; 0x4001]).is_err(),
+        "oversized blob"
+    );
+
+    // Entries all pointing at the same body: cheap to write, expensive to
+    // decode, and never something a real endorsement chain does.
+    let mut blob = Vec::new();
+    for _ in 0..64u32 {
+        blob.extend_from_slice(&[0xAA; 16]);
+        blob.extend_from_slice(&2048u32.to_le_bytes());
+        blob.extend_from_slice(&1024u32.to_le_bytes());
+    }
+    blob.resize(4096, 0);
+    assert!(CertTable::parse(&blob).is_err(), "entry count");
 }

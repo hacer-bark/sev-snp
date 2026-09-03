@@ -99,6 +99,19 @@
 //! verification and fetches nothing from the network, so that the verifying
 //! party can be a different machine running code of its own choosing. Treat
 //! everything a report says as unverified until you have done that.
+//!
+//! What this crate does check, because a guest can do it without any
+//! cryptography and a caller who skips it has no way to notice:
+//!
+//! - The response answers *this* request. `REPORT_DATA` and the privilege
+//!   level are echoed by the firmware, so both are compared against what was
+//!   asked for and a mismatch is [`Error::Mismatch`], never a returned report.
+//! - The interface is really SEV-SNP. configfs-TSM is shared with TDX and
+//!   others, so the provider name is checked once at open; anything else is
+//!   [`Error::WrongProvider`] rather than a foreign quote parsed as a report.
+//! - The response is shaped like a report. The version is bounded above as
+//!   well as below, and a host-supplied certificate blob is bounded in size
+//!   and entry count before any of it is decoded.
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(not(feature = "sev-guest"), forbid(unsafe_code))]
@@ -139,6 +152,49 @@ pub use tcb::{Fms, Product, TcbLayout, TcbParts, TcbVersion};
 use backend::configfs::ConfigFs;
 #[cfg(feature = "sev-guest")]
 use backend::ioctl::SevGuest;
+
+/// Backoff before each retry of a transient failure.
+///
+/// One entry per retry, so a request is attempted `len() + 1` times in all.
+/// The sum is the entire wall-clock cost of exhausting a request, and it is
+/// deliberately a fraction of a second: a call that can be made to block for
+/// seconds is a call that can be used to pin a caller's threads, and on the
+/// ioctl transport every attempt also consumes a VMPCK sequence number that
+/// the guest can never get back.
+const RETRY_BACKOFF: [std::time::Duration; 2] = [
+    std::time::Duration::from_millis(20),
+    std::time::Duration::from_millis(80),
+];
+
+/// Whether an error is one the kernel expects the guest to try again on.
+///
+/// [`Error::Raced`] is transient by definition, and the hypervisor raises
+/// [`VmmError::Busy`] — surfacing as `EBUSY` or `EAGAIN` through configfs —
+/// while it services another guest's request. Nothing else is retried: a
+/// [`Error::Mismatch`] in particular is a signal that something is wrong, not
+/// an invitation to ask again.
+fn is_transient(error: &Error) -> bool {
+    use std::io::ErrorKind::{Interrupted, ResourceBusy, WouldBlock};
+    match error {
+        Error::Raced | Error::Vmm(VmmError::Busy) => true,
+        Error::Io(e) => matches!(e.kind(), ResourceBusy | WouldBlock | Interrupted),
+        _ => false,
+    }
+}
+
+/// Runs `attempt`, retrying transient failures on a fixed, bounded schedule.
+fn retrying<T>(mut attempt: impl FnMut() -> Result<T>) -> Result<T> {
+    let mut backoff = RETRY_BACKOFF.iter();
+    loop {
+        match attempt() {
+            Err(error) if is_transient(&error) => match backoff.next() {
+                Some(delay) => std::thread::sleep(*delay),
+                None => return Err(error),
+            },
+            settled => return settled,
+        }
+    }
+}
 
 /// A handle to the SEV-SNP guest firmware.
 ///
@@ -252,6 +308,10 @@ impl Firmware {
     /// hash of a public key you want the report to endorse. All-zero data
     /// produces a valid but replayable report.
     ///
+    /// The returned report is guaranteed to carry exactly these bytes: a
+    /// response whose `REPORT_DATA` differs is rejected as
+    /// [`Error::Mismatch`] rather than returned.
+    ///
     /// # Errors
     ///
     /// See [`GuestBackend::report`].
@@ -261,11 +321,16 @@ impl Firmware {
 
     /// Requests a report with full control over the request.
     ///
+    /// Transient failures — a busy hypervisor, a detected race — are retried
+    /// twice, with a total backoff well under a second, before the error is
+    /// returned. Call [`GuestBackend::report`] on a backend directly to issue
+    /// exactly one request with no retry.
+    ///
     /// # Errors
     ///
     /// See [`GuestBackend::report`].
     pub fn report_with(&self, request: &ReportRequest) -> Result<AttestationReport> {
-        self.report_backend()?.report(request)
+        retrying(|| self.report_backend()?.report(request))
     }
 
     /// Requests a report together with the host-provisioned certificate chain.
@@ -283,11 +348,13 @@ impl Firmware {
 
     /// Requests an extended report with full control over the request.
     ///
+    /// Retried on transient failures exactly as [`report_with`](Self::report_with).
+    ///
     /// # Errors
     ///
     /// See [`GuestBackend::extended_report`].
     pub fn extended_report_with(&self, request: &ReportRequest) -> Result<ExtendedReport> {
-        self.report_backend()?.extended_report(request)
+        retrying(|| self.report_backend()?.extended_report(request))
     }
 
     /// Derives a key from a secret held inside the processor.

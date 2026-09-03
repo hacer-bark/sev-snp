@@ -17,6 +17,19 @@ use std::fmt;
 
 /// Size of one certificate table entry.
 const ENTRY_SIZE: usize = 24;
+/// Largest blob this crate will decode.
+///
+/// `SEV_FW_BLOB_MAX_SIZE` in the kernel, which is also what `/dev/sev-guest`
+/// enforces on the buffer it fills. configfs reads `auxblob` with no such cap,
+/// so the limit is applied here instead of trusting whichever path arrived.
+const BLOB_MAX: usize = 0x4000;
+/// Most entries a table may declare.
+///
+/// The chain AMD defines is four certificates plus an optional platform-info
+/// entry. The ceiling is generous enough to absorb a future addition and low
+/// enough that a table pointing every entry at the same body cannot make the
+/// decoded form much larger than the blob it came from.
+const MAX_ENTRIES: usize = 16;
 /// Offset of the body offset within an entry.
 const ENTRY_OFFSET_FIELD: usize = 16;
 /// Offset of the body length within an entry.
@@ -135,11 +148,20 @@ impl CertTable {
     /// # Errors
     ///
     /// Returns [`ParseError::TooShort`] if the table runs off the end of the
-    /// blob without a terminator, or [`ParseError::CertTableOutOfBounds`] if an
-    /// entry describes a body that does not lie within the blob.
+    /// blob without a terminator, [`ParseError::CertTableOutOfBounds`] if an
+    /// entry describes a body that does not lie within the blob, or
+    /// [`ParseError::CertTableTooLarge`] if the blob or the number of entries
+    /// exceeds what this crate will decode.
     pub fn parse(blob: &[u8]) -> Result<Self> {
         if blob.is_empty() {
             return Ok(Self::default());
+        }
+        if blob.len() > BLOB_MAX {
+            return Err(ParseError::CertTableTooLarge {
+                what: "blob",
+                limit: BLOB_MAX,
+            }
+            .into());
         }
 
         let mut certs = Vec::new();
@@ -151,6 +173,14 @@ impl CertTable {
                 need: cursor.saturating_add(ENTRY_SIZE),
                 got: blob.len(),
             };
+
+            if certs.len() >= MAX_ENTRIES {
+                return Err(ParseError::CertTableTooLarge {
+                    what: "entry count",
+                    limit: MAX_ENTRIES,
+                }
+                .into());
+            }
 
             let guid = bytes_at::<16>(blob, cursor).ok_or_else(short)?;
             let offset =

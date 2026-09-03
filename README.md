@@ -37,6 +37,12 @@ fn main() -> Result<(), sev_snp::Error> {
 | Firmware status codes | yes | collapsed into `errno` |
 | Concurrent-writer detection | no | yes |
 
+Every report is checked against the request that produced it — the firmware
+echoes `REPORT_DATA` and the privilege level, so a response that answers
+somebody else's request is rejected rather than returned. configfs-TSM is shared
+with TDX and other architectures, so the provider is verified at open time and
+this crate will not attach to anything but `sev_guest`.
+
 Plus SEV, SEV-ES and SEV-SNP capability detection through
 `CPUID(0x8000_001F)`, which is the whole of the guest-visible API for the first
 two.

@@ -39,6 +39,19 @@ pub enum Error {
     /// discarded rather than returned.
     Raced,
 
+    /// The firmware returned a report that does not answer the request.
+    ///
+    /// The firmware copies `REPORT_DATA` and the privilege level into the
+    /// report verbatim, so a mismatch means the response belongs to somebody
+    /// else's request. Always a bug or an attack, never a transient condition.
+    Mismatch(&'static str),
+
+    /// The configfs-TSM interface belongs to a different architecture.
+    ///
+    /// `/sys/kernel/config/tsm/report` is shared by SEV-SNP, TDX and others.
+    /// The name the kernel reports is carried here.
+    WrongProvider(String),
+
     /// An underlying I/O operation failed.
     Io(std::io::Error),
 }
@@ -55,6 +68,10 @@ impl fmt::Display for Error {
             Self::Vmm(e) => write!(f, "hypervisor error: {e}"),
             Self::Parse(e) => write!(f, "malformed response: {e}"),
             Self::Raced => f.write_str("concurrent writer detected on configfs report entry"),
+            Self::Mismatch(what) => write!(f, "response does not match the request: {what}"),
+            Self::WrongProvider(name) => {
+                write!(f, "configfs-TSM provider is `{name}`, not `sev_guest`")
+            }
             Self::Io(e) => write!(f, "io error: {e}"),
         }
     }
@@ -287,7 +304,6 @@ impl std::error::Error for FirmwareError {}
 #[non_exhaustive]
 pub enum VmmError {
     /// The certificate buffer supplied was too small; retry with a larger one.
-    /// A supplied buffer was the wrong length.
     InvalidLen,
     /// The hypervisor is busy servicing another guest request; retry later.
     Busy,
@@ -336,6 +352,13 @@ pub enum ParseError {
     UnsupportedReportVersion(u32),
     /// A certificate table entry pointed outside the blob that contains it.
     CertTableOutOfBounds,
+    /// A certificate table exceeded the bounds this crate is willing to decode.
+    CertTableTooLarge {
+        /// What was over the limit.
+        what: &'static str,
+        /// The limit that was exceeded.
+        limit: usize,
+    },
 }
 
 impl fmt::Display for ParseError {
@@ -349,6 +372,9 @@ impl fmt::Display for ParseError {
             }
             Self::CertTableOutOfBounds => {
                 f.write_str("certificate table entry points outside the blob")
+            }
+            Self::CertTableTooLarge { what, limit } => {
+                write!(f, "certificate table {what} exceeds its limit of {limit}")
             }
         }
     }
