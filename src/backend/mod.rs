@@ -19,20 +19,38 @@
 //! read, and falls back to the ioctl device. Key derivation always needs the
 //! ioctl device, so `Firmware` opens both when it can.
 
+#[cfg(feature = "configfs")]
+#[cfg_attr(docsrs, doc(cfg(feature = "configfs")))]
 pub mod configfs;
+
+#[cfg(feature = "sev-guest")]
+#[cfg_attr(docsrs, doc(cfg(feature = "sev-guest")))]
 pub mod ioctl;
 
 use crate::certs::ExtendedReport;
 use crate::error::Result;
+#[cfg(feature = "sev-guest")]
 use crate::key::{DerivedKey, KeyRequest};
 use crate::report::AttestationReport;
 
 /// Which kernel interface a backend speaks.
+///
+/// A variant exists only when its feature is enabled, so naming a transport
+/// this build cannot speak is a compile error rather than a runtime one.
+///
+/// Marked `#[non_exhaustive]` because of that: cargo unifies features across a
+/// dependency graph, so another crate switching one on would otherwise break an
+/// exhaustive `match` written here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Transport {
     /// The `/dev/sev-guest` character device.
+    #[cfg(feature = "sev-guest")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "sev-guest")))]
     Ioctl,
     /// The configfs-TSM interface under `/sys/kernel/config/tsm/report`.
+    #[cfg(feature = "configfs")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "configfs")))]
     ConfigFs,
 }
 
@@ -138,11 +156,23 @@ pub trait GuestBackend: std::fmt::Debug + Send + Sync {
     /// [`Error::InvalidArgument`](crate::Error::InvalidArgument) for a VMPL
     /// outside `0..=3`, or [`Error::Firmware`](crate::Error::Firmware) if the
     /// secure processor rejected the binding.
+    #[cfg(feature = "sev-guest")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "sev-guest")))]
     fn derive_key(&self, request: &KeyRequest) -> Result<DerivedKey>;
 }
 
 /// Whether any usable guest interface exists on this system.
+///
+/// Only transports compiled into this build are considered.
 #[must_use]
 pub fn any_available() -> bool {
-    configfs::available() || ioctl::available()
+    #[cfg(feature = "configfs")]
+    if configfs::available() {
+        return true;
+    }
+    #[cfg(feature = "sev-guest")]
+    if ioctl::available() {
+        return true;
+    }
+    false
 }

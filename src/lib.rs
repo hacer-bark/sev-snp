@@ -26,9 +26,18 @@
 //! - **[Endorsement certificates](CertTable)** — the chain that verifies the
 //!   report's signature, when the host provisioned one. See
 //!   [`Firmware::extended_report`].
-//! - **[Derived keys](DerivedKey)** — reproducible key material bound to any
-//!   combination of the chip, the firmware version, and the guest image. See
-//!   [`Firmware::derive_key`] and the [`key`] module.
+#![cfg_attr(
+    feature = "sev-guest",
+    doc = "- **[Derived keys](DerivedKey)** — reproducible key material bound to any"
+)]
+#![cfg_attr(
+    feature = "sev-guest",
+    doc = "  combination of the chip, the firmware version, and the guest image. See"
+)]
+#![cfg_attr(
+    feature = "sev-guest",
+    doc = "  [`Firmware::derive_key`] and the [`key`] module."
+)]
 //! - **[Capability detection](detect)** — what the processor supports, and
 //!   whether this process is in fact running inside an SNP guest.
 //!
@@ -54,13 +63,32 @@
 //! crate knows and expose the rest through `unknown_bits`, so a report from
 //! firmware newer than this crate parses rather than fails.
 //!
-//! # Transports
+//! # Transports and features
 //!
 //! Linux exposes guest requests through both `/dev/sev-guest` (5.19 and later)
 //! and configfs-TSM (6.7 and later). [`Firmware::open`] uses whichever are
 //! present, preferring configfs for reports because it can detect a concurrent
 //! writer, and requiring `/dev/sev-guest` for key derivation because configfs
 //! does not implement it. See the [`backend`] module for the full comparison.
+//!
+//! Each transport is a cargo feature, both on by default. Turning one off
+//! compiles it out entirely, along with anything only it needed:
+//!
+//! - `configfs` — the configfs-TSM transport. Reports only.
+//! - `sev-guest` — the `/dev/sev-guest` transport. Adds key derivation and
+//!   firmware status codes, and pulls in `libc`.
+//!
+//! Selecting neither is a compile error. Selecting only `configfs` leaves a
+//! crate with no dependencies at all, compiled under `forbid(unsafe_code)` —
+//! useful for a verifier or a report-only agent that wants no `unsafe`
+//! anywhere in what it builds.
+//!
+//! Anything a build cannot do is absent rather than failing at run time:
+//! without `sev-guest` there is no `Firmware::derive_key`, no `key` module and
+//! no `Transport::Ioctl`, so code that needs them fails to compile instead of
+//! reaching production and returning an error. Write against both feature sets
+//! the way `examples/attest.rs` does, with a `#[cfg]` around the parts that
+//! need a particular transport.
 //!
 //! # Trust boundary
 //!
@@ -73,8 +101,17 @@
 //! everything a report says as unverified until you have done that.
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
+#![cfg_attr(not(feature = "sev-guest"), forbid(unsafe_code))]
 
-#[cfg(doctest)]
+#[cfg(not(any(feature = "configfs", feature = "sev-guest")))]
+compile_error!(
+    "sev-snp needs at least one backend: enable the `configfs` feature, the \
+     `sev-guest` feature, or both (both are on by default)."
+);
+
+// The README example covers key derivation, so it is compiled only where that
+// API exists. The default feature set includes it, so CI still checks it.
+#[cfg(all(doctest, feature = "sev-guest"))]
 #[doc = include_str!("../README.md")]
 struct ReadmeDoctests;
 
@@ -82,6 +119,8 @@ pub mod backend;
 pub mod certs;
 pub mod detect;
 pub mod error;
+#[cfg(feature = "sev-guest")]
+#[cfg_attr(docsrs, doc(cfg(feature = "sev-guest")))]
 pub mod key;
 pub mod policy;
 pub mod report;
@@ -90,43 +129,71 @@ pub mod tcb;
 pub use backend::{GuestBackend, ReportRequest, Transport};
 pub use certs::{CertKind, CertTable, Certificate, ExtendedReport};
 pub use error::{Error, FirmwareError, ParseError, Result, VmmError};
+#[cfg(feature = "sev-guest")]
 pub use key::{DerivedKey, KeyFields, KeyRequest, RootKey};
 pub use policy::{GuestPolicy, PlatformInfo, SignatureAlgo, SignerInfo, SigningKey};
 pub use report::{AttestationReport, EcdsaP384Signature, FirmwareVersion};
 pub use tcb::{Fms, Product, TcbLayout, TcbParts, TcbVersion};
 
+#[cfg(feature = "configfs")]
 use backend::configfs::ConfigFs;
+#[cfg(feature = "sev-guest")]
 use backend::ioctl::SevGuest;
 
 /// A handle to the SEV-SNP guest firmware.
 ///
-/// Opens whichever kernel transports are available and routes each request to
-/// one that implements it. Cheap to keep around and safe to share between
-/// threads; the kernel serialises guest requests internally.
+/// Opens whichever kernel transports are compiled in and available, and routes
+/// each request to one that implements it. Cheap to keep around and safe to
+/// share between threads; the kernel serialises guest requests internally.
 #[derive(Debug)]
 pub struct Firmware {
+    /// Which backend serves reports. Fixed at open time, and always backed by
+    /// a live handle, so no request has to guess.
+    transport: Transport,
+    #[cfg(feature = "configfs")]
     configfs: Option<ConfigFs>,
+    #[cfg(feature = "sev-guest")]
     ioctl: Option<SevGuest>,
 }
 
 impl Firmware {
-    /// Opens every available guest transport.
+    /// Opens every guest transport that is compiled in and available.
     ///
-    /// Fails with [`Error::NoBackend`] if the kernel exposes neither, which
-    /// normally means this is not an SEV-SNP guest. Opening `/dev/sev-guest`
-    /// requires root; if that fails but configfs works, this still succeeds and
-    /// only [`derive_key`](Self::derive_key) is unavailable.
+    /// Opening `/dev/sev-guest` requires root; if that fails but configfs
+    /// works, this still succeeds and only key derivation is unavailable.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::NoBackend`] if neither transport could be opened.
+    /// Returns [`Error::NoBackend`] if no transport could be opened, which
+    /// normally means this is not an SEV-SNP guest.
     pub fn open() -> Result<Self> {
+        #[cfg(feature = "configfs")]
         let configfs = ConfigFs::open().ok();
+        #[cfg(feature = "sev-guest")]
         let ioctl = SevGuest::open().ok();
-        if configfs.is_none() && ioctl.is_none() {
-            return Err(Error::NoBackend);
-        }
-        Ok(Self { configfs, ioctl })
+
+        // configfs is preferred for reports: it is the only transport that can
+        // tell us whether another process overwrote our request before we read
+        // the answer.
+        #[cfg(feature = "configfs")]
+        let transport = if configfs.is_some() {
+            Some(Transport::ConfigFs)
+        } else {
+            None
+        };
+        #[cfg(not(feature = "configfs"))]
+        let transport = None;
+
+        #[cfg(feature = "sev-guest")]
+        let transport = transport.or_else(|| ioctl.as_ref().map(|_| Transport::Ioctl));
+
+        Ok(Self {
+            transport: transport.ok_or(Error::NoBackend)?,
+            #[cfg(feature = "configfs")]
+            configfs,
+            #[cfg(feature = "sev-guest")]
+            ioctl,
+        })
     }
 
     /// Opens exactly one transport, failing if it is unavailable.
@@ -135,17 +202,26 @@ impl Firmware {
     /// on [`Transport::Ioctl`] so that firmware status codes survive, rather
     /// than being collapsed into an `errno` by configfs.
     ///
+    /// A transport whose feature is off has no [`Transport`] variant, so
+    /// asking for one this build cannot speak does not compile.
+    ///
     /// # Errors
     ///
-    /// Returns [`Error::NoBackend`] or [`Error::Io`] if the requested transport
-    /// is absent or cannot be opened.
+    /// Returns [`Error::NoBackend`] or [`Error::Io`] if the transport is absent
+    /// from this system or cannot be opened.
     pub fn open_with(transport: Transport) -> Result<Self> {
         match transport {
+            #[cfg(feature = "configfs")]
             Transport::ConfigFs => Ok(Self {
+                transport,
                 configfs: Some(ConfigFs::open()?),
+                #[cfg(feature = "sev-guest")]
                 ioctl: None,
             }),
+            #[cfg(feature = "sev-guest")]
             Transport::Ioctl => Ok(Self {
+                transport,
+                #[cfg(feature = "configfs")]
                 configfs: None,
                 ioctl: Some(SevGuest::open()?),
             }),
@@ -154,14 +230,16 @@ impl Firmware {
 
     /// Which transport reports will be fetched from.
     #[must_use]
-    pub fn transport(&self) -> Transport {
-        self.report_backend().transport()
+    pub const fn transport(&self) -> Transport {
+        self.transport
     }
 
     /// Whether key derivation is available on this handle.
     ///
-    /// False when only configfs could be opened, which usually means the
+    /// False when the device could not be opened, which usually means the
     /// process lacks the privileges for `/dev/sev-guest`.
+    #[cfg(feature = "sev-guest")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "sev-guest")))]
     #[must_use]
     pub const fn can_derive_keys(&self) -> bool {
         self.ioctl.is_some()
@@ -187,7 +265,7 @@ impl Firmware {
     ///
     /// See [`GuestBackend::report`].
     pub fn report_with(&self, request: &ReportRequest) -> Result<AttestationReport> {
-        self.report_backend().report(request)
+        self.report_backend()?.report(request)
     }
 
     /// Requests a report together with the host-provisioned certificate chain.
@@ -209,17 +287,20 @@ impl Firmware {
     ///
     /// See [`GuestBackend::extended_report`].
     pub fn extended_report_with(&self, request: &ReportRequest) -> Result<ExtendedReport> {
-        self.report_backend().extended_report(request)
+        self.report_backend()?.extended_report(request)
     }
 
     /// Derives a key from a secret held inside the processor.
     ///
-    /// Requires the `/dev/sev-guest` transport; see [`can_derive_keys`](Self::can_derive_keys).
-    /// The [`key`] module explains what the request can bind the key to.
+    /// Requires the `/dev/sev-guest` transport; see
+    /// [`can_derive_keys`](Self::can_derive_keys). The [`key`] module explains
+    /// what the request can bind the key to.
     ///
     /// # Errors
     ///
     /// See [`GuestBackend::derive_key`].
+    #[cfg(feature = "sev-guest")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "sev-guest")))]
     pub fn derive_key(&self, request: &KeyRequest) -> Result<DerivedKey> {
         let ioctl = self.ioctl.as_ref().ok_or(Error::Unsupported(
             "key derivation needs /dev/sev-guest, which is not open",
@@ -227,13 +308,21 @@ impl Firmware {
         ioctl.derive_key(request)
     }
 
-    /// configfs is preferred: it is the only transport that can tell us whether
-    /// another process overwrote our request before we read the answer.
-    fn report_backend(&self) -> &dyn GuestBackend {
-        match (&self.configfs, &self.ioctl) {
-            (Some(c), _) => c,
-            (None, Some(i)) => i,
-            (None, None) => unreachable!("Firmware is never constructed without a backend"),
+    /// The live backend serving reports, selected once at open time.
+    fn report_backend(&self) -> Result<&dyn GuestBackend> {
+        match self.transport {
+            #[cfg(feature = "configfs")]
+            Transport::ConfigFs => self
+                .configfs
+                .as_ref()
+                .map(|backend| -> &dyn GuestBackend { backend })
+                .ok_or(Error::NoBackend),
+            #[cfg(feature = "sev-guest")]
+            Transport::Ioctl => self
+                .ioctl
+                .as_ref()
+                .map(|backend| -> &dyn GuestBackend { backend })
+                .ok_or(Error::NoBackend),
         }
     }
 }

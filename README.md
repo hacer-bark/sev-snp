@@ -41,6 +41,42 @@ Plus SEV, SEV-ES and SEV-SNP capability detection through
 `CPUID(0x8000_001F)`, which is the whole of the guest-visible API for the first
 two.
 
+## Features
+
+Each transport is a cargo feature, both on by default. Turning one off compiles
+it out entirely, along with anything only it needed.
+
+| Feature | Transport | Adds | Cost |
+|---|---|---|---|
+| `configfs` | configfs-TSM | reports, concurrent-writer detection | no dependencies |
+| `sev-guest` | `/dev/sev-guest` | key derivation, firmware status codes | `libc`, `zeroize` |
+
+Selecting neither is a compile error.
+
+Anything a build cannot do is absent rather than failing at run time. Without
+`sev-guest` there is no `Firmware::derive_key`, no `key` module and no
+`Transport::Ioctl`, so code that needs them fails to compile rather than
+reaching production and returning an error. `Transport` is `#[non_exhaustive]`
+so that a sibling crate enabling a feature cannot break an exhaustive `match`.
+See `examples/attest.rs` for the `#[cfg]` pattern that works under any feature
+selection.
+
+## Unsafe code
+
+The crate builds under `unsafe_code = "deny"`. There is exactly one permitted
+exception, carrying an `#[expect(unsafe_code, reason = "...")]` that explains
+itself: the `libc::ioctl` call in `backend::ioctl`. An ioctl cannot be made safe
+by any wrapper — the obligation being discharged is that the opcode matches the
+driver's struct and that the buffers stay live for the call, which only the
+caller can know.
+
+With `--no-default-features --features configfs` that block is not compiled, all
+dependencies disappear, and the crate is built under
+`forbid(unsafe_code)`, which an `expect` cannot lift. "This build contains no
+unsafe code" is therefore checked by the compiler rather than asserted here.
+That build cannot derive keys: the kernel exposes key derivation only through
+the ioctl.
+
 ## Portability
 
 One code path covers Zen 3 through Zen 5. Report versions 2 to 5 parse

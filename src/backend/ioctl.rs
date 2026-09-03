@@ -128,6 +128,14 @@ impl SevGuest {
     /// Errors reported through `EXITINFO2` take precedence over the `errno`,
     /// because the kernel returns a generic `-EIO` for anything the firmware or
     /// hypervisor rejected and only the former says why.
+    #[expect(
+        unsafe_code,
+        reason = "the whole crate's only FFI call: an ioctl cannot be made safe \
+                  by any wrapper, because the obligation being discharged is \
+                  that this opcode matches this driver's struct and that the \
+                  two buffers stay live for the call. Keeping it here, in one \
+                  statement, is what lets every other module forbid unsafe."
+    )]
     fn issue(&self, code: u32, request: &mut [u8], response: &mut [u8]) -> Result<()> {
         let bad_address = || Error::InvalidArgument("buffer address does not fit in a u64");
         let mut arg = GuestRequestIoctl {
@@ -146,8 +154,9 @@ impl SevGuest {
         let code = code.into();
 
         // SAFETY: `code` is one of the three request codes this driver defines,
-        // built from the size of the struct we pass. `arg` is a live, correctly
-        // sized `snp_guest_request_ioctl`, and the two buffers it points at are
+        // built from the size of the struct we pass, whose layout is pinned by
+        // the assertion above. `arg` is a live, correctly sized
+        // `snp_guest_request_ioctl`, and the two buffers it points at are
         // exclusively borrowed for the duration of the call.
         let rc = unsafe { libc::ioctl(self.fd(), code, &raw mut arg) };
 

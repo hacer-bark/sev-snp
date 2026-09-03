@@ -13,13 +13,27 @@ categories = ["api-bindings", "cryptography", "hardware-support"]
 keywords = ["sev", "snp", "attestation", "amd", "confidential-computing"]
 
 [dependencies]
-zeroize = { version = "1", default-features = false }
+zeroize = { version = "1", default-features = false, optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-libc = "0.2"
+libc = { version = "0.2", optional = true }
 
 [dev-dependencies]
 rand = "0.10"
+
+[[example]]
+name = "derive_key"
+required-features = ["sev-guest"]
+
+[features]
+default = ["configfs", "sev-guest"]
+# The configfs-TSM transport (`/sys/kernel/config/tsm/report`, Linux 6.7+).
+# Attestation reports only; contains no `unsafe` and pulls in no C bindings.
+configfs = []
+# The `/dev/sev-guest` ioctl transport (Linux 5.19+). Required for key
+# derivation, and the only transport that surfaces firmware status codes.
+# Pulls in `libc` and contains this crate's single `unsafe` block.
+sev-guest = ["dep:libc", "dep:zeroize"]
 
 [lints.rust]
 warnings = "deny"
@@ -28,6 +42,7 @@ unused = "deny"
 missing_docs = "deny"
 missing_debug_implementations = "deny"
 unreachable_pub = "deny"
+unsafe_code = "deny"
 
 [lints.clippy]
 all = "deny"

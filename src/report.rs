@@ -256,9 +256,9 @@ impl AttestationReport {
 
     /// Mitigation vector in effect at launch. Present from report version 5.
     ///
-    /// Each bit records a hardware mitigation that was active. Pass this to
-    /// [`KeyRequest::bind_launch_mit_vector`](crate::KeyRequest::bind_launch_mit_vector)
-    /// to make a derived key depend on the mitigation state.
+    /// Each bit records a hardware mitigation that was active. Pass it to
+    /// `KeyRequest::bind_launch_mit_vector` to make a derived key depend on the
+    /// mitigation state.
     #[must_use]
     pub fn launch_mit_vector(&self) -> Option<u64> {
         (self.version() >= 5).then(|| self.u64_at(0x1F8))

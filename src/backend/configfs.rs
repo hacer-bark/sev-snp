@@ -18,6 +18,7 @@
 use super::{GuestBackend, ReportRequest, Transport};
 use crate::certs::{CertTable, ExtendedReport};
 use crate::error::{Error, Result};
+#[cfg(feature = "sev-guest")]
 use crate::key::{DerivedKey, KeyRequest};
 use crate::report::AttestationReport;
 use std::fs;
@@ -151,9 +152,11 @@ impl GuestBackend for ConfigFs {
         })
     }
 
+    #[cfg(feature = "sev-guest")]
     fn derive_key(&self, _request: &KeyRequest) -> Result<DerivedKey> {
         Err(Error::Unsupported(
-            "configfs-TSM has no key derivation interface; use /dev/sev-guest",
+            "configfs-TSM has no key derivation interface; enable the \
+             `sev-guest` feature and use /dev/sev-guest",
         ))
     }
 }

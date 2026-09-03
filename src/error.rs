@@ -357,6 +357,10 @@ impl fmt::Display for ParseError {
 impl std::error::Error for ParseError {}
 
 /// Splits a raw `EXITINFO2` value into its VMM and firmware halves.
+///
+/// Only the ioctl transport reports `EXITINFO2`; configfs collapses firmware
+/// and hypervisor failures into an `errno`.
+#[cfg(feature = "sev-guest")]
 pub(crate) const fn from_exitinfo2(exitinfo2: u64) -> Option<Error> {
     let [f0, f1, f2, f3, v0, v1, v2, v3] = exitinfo2.to_le_bytes();
     let fw = u32::from_le_bytes([f0, f1, f2, f3]);
