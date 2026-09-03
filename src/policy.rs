@@ -20,36 +20,45 @@ impl GuestPolicy {
     const KNOWN: u64 = 0x03FF_FFFF;
 
     /// Wraps a raw policy value.
+    #[must_use]
     pub const fn from_raw(raw: u64) -> Self {
         Self(raw)
     }
 
     /// The underlying 64-bit value.
+    #[must_use]
     pub const fn raw(self) -> u64 {
         self.0
     }
 
     /// Minimum SEV-SNP ABI minor version required to run this guest.
+    #[must_use]
     pub const fn abi_minor(self) -> u8 {
-        self.0 as u8
+        let [minor, ..] = self.0.to_le_bytes();
+        minor
     }
 
     /// Minimum SEV-SNP ABI major version required to run this guest.
+    #[must_use]
     pub const fn abi_major(self) -> u8 {
-        (self.0 >> 8) as u8
+        let [_, major, ..] = self.0.to_le_bytes();
+        major
     }
 
     /// Simultaneous multithreading is permitted on the host.
+    #[must_use]
     pub const fn smt_allowed(self) -> bool {
         self.bit(16)
     }
 
     /// Reserved bit 17, which the ABI requires to be set on a valid policy.
+    #[must_use]
     pub const fn reserved_bit_set(self) -> bool {
         self.bit(17)
     }
 
     /// Association with a migration agent is permitted.
+    #[must_use]
     pub const fn migrate_ma_allowed(self) -> bool {
         self.bit(18)
     }
@@ -57,36 +66,43 @@ impl GuestPolicy {
     /// Debugging is permitted, which lets the host read guest memory.
     ///
     /// A relying party should normally refuse a report with this set.
+    #[must_use]
     pub const fn debug_allowed(self) -> bool {
         self.bit(19)
     }
 
     /// The guest must run on a single socket.
+    #[must_use]
     pub const fn single_socket_required(self) -> bool {
         self.bit(20)
     }
 
     /// CXL memory may be attached to the guest.
+    #[must_use]
     pub const fn cxl_allowed(self) -> bool {
         self.bit(21)
     }
 
     /// The guest requires AES-256-XTS memory encryption.
+    #[must_use]
     pub const fn mem_aes_256_xts_required(self) -> bool {
         self.bit(22)
     }
 
     /// Running average power limit reporting must be disabled.
+    #[must_use]
     pub const fn rapl_disabled(self) -> bool {
         self.bit(23)
     }
 
     /// The guest requires ciphertext hiding for DRAM.
+    #[must_use]
     pub const fn ciphertext_hiding_dram_required(self) -> bool {
         self.bit(24)
     }
 
     /// Page swapping by the host is disabled for this guest.
+    #[must_use]
     pub const fn page_swap_disabled(self) -> bool {
         self.bit(25)
     }
@@ -95,12 +111,13 @@ impl GuestPolicy {
     ///
     /// Non-zero means the guest was launched under a policy from a newer ABI
     /// revision. Inspect it before treating an absent feature flag as "off".
+    #[must_use]
     pub const fn unknown_bits(self) -> u64 {
         self.0 & !Self::KNOWN
     }
 
-    const fn bit(self, n: u32) -> bool {
-        self.0 & (1 << n) != 0
+    const fn bit(self, index: u32) -> bool {
+        self.0.wrapping_shr(index) & 1 == 1
     }
 }
 
@@ -134,61 +151,71 @@ impl PlatformInfo {
     const KNOWN: u64 = 0xBF;
 
     /// Wraps a raw platform info value.
+    #[must_use]
     pub const fn from_raw(raw: u64) -> Self {
         Self(raw)
     }
 
     /// The underlying 64-bit value.
+    #[must_use]
     pub const fn raw(self) -> u64 {
         self.0
     }
 
     /// Simultaneous multithreading is enabled on the host.
+    #[must_use]
     pub const fn smt_enabled(self) -> bool {
         self.bit(0)
     }
 
     /// Transparent secure memory encryption is enabled.
+    #[must_use]
     pub const fn tsme_enabled(self) -> bool {
         self.bit(1)
     }
 
     /// Memory is protected by error correcting codes.
+    #[must_use]
     pub const fn ecc_enabled(self) -> bool {
         self.bit(2)
     }
 
     /// Running average power limit reporting is disabled.
+    #[must_use]
     pub const fn rapl_disabled(self) -> bool {
         self.bit(3)
     }
 
     /// Ciphertext hiding is enabled for DRAM.
+    #[must_use]
     pub const fn ciphertext_hiding_dram_enabled(self) -> bool {
         self.bit(4)
     }
 
     /// Alias detection has completed since the last reset with no aliases found.
     ///
-    /// This is the platform's attestable mitigation for the BadRAM class of
-    /// attacks (AMD-SB-3015); a relying party that cares about physical memory
+    /// This is the platform's attestable mitigation for the `BadRAM` class of
+    /// attacks (`AMD-SB-3015`); a relying party that cares about physical memory
     /// aliasing should require it.
+    #[must_use]
     pub const fn alias_check_complete(self) -> bool {
         self.bit(5)
     }
 
     /// SEV-TIO (trusted I/O) is enabled.
+    #[must_use]
     pub const fn tio_enabled(self) -> bool {
         self.bit(7)
     }
 
     /// Platform info bits set that this crate does not have a name for.
+    #[must_use]
     pub const fn unknown_bits(self) -> u64 {
         self.0 & !Self::KNOWN
     }
 
-    const fn bit(self, n: u32) -> bool {
-        self.0 & (1 << n) != 0
+    const fn bit(self, index: u32) -> bool {
+        self.0.wrapping_shr(index) & 1 == 1
     }
 }
 
@@ -239,28 +266,33 @@ pub struct SignerInfo(u32);
 
 impl SignerInfo {
     /// Wraps a raw signer info value.
+    #[must_use]
     pub const fn from_raw(raw: u32) -> Self {
         Self(raw)
     }
 
     /// The underlying 32-bit value.
+    #[must_use]
     pub const fn raw(self) -> u32 {
         self.0
     }
 
     /// The guest was launched with an ID block that includes an author key.
+    #[must_use]
     pub const fn author_key_enabled(self) -> bool {
         self.0 & 1 != 0
     }
 
     /// The host masked the chip ID, so `CHIP_ID` in the report reads as zeros.
+    #[must_use]
     pub const fn chip_key_masked(self) -> bool {
         self.0 & 2 != 0
     }
 
     /// The key that signed the report.
+    #[must_use]
     pub const fn signing_key(self) -> SigningKey {
-        match ((self.0 >> 2) & 0x7) as u8 {
+        match crate::low_byte(self.0.wrapping_shr(2) & 0x7) {
             0 => SigningKey::Vcek,
             1 => SigningKey::Vlek,
             7 => SigningKey::None,
@@ -296,6 +328,7 @@ pub enum SignatureAlgo {
 
 impl SignatureAlgo {
     /// Interprets a raw `SIGNATURE_ALGO` value.
+    #[must_use]
     pub const fn from_raw(raw: u32) -> Self {
         match raw {
             0 => Self::None,

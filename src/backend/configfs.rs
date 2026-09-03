@@ -29,6 +29,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub const REPORT_ROOT: &str = "/sys/kernel/config/tsm/report";
 
 /// Whether the configfs-TSM report interface is present.
+#[must_use]
 pub fn available() -> bool {
     Path::new(REPORT_ROOT).is_dir()
 }
@@ -41,11 +42,20 @@ pub struct ConfigFs {
 
 impl ConfigFs {
     /// Opens the interface at its standard location.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NoBackend`] if the kernel does not expose the
+    /// configfs-TSM report directory.
     pub fn open() -> Result<Self> {
         Self::open_at(REPORT_ROOT)
     }
 
     /// Opens the interface at a non-standard mount point.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NoBackend`] if `root` is not a directory.
     pub fn open_at(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
         if !root.is_dir() {
@@ -59,6 +69,11 @@ impl ConfigFs {
     /// Worth checking before trusting a report: configfs-TSM is shared with
     /// other confidential-computing architectures, and on a TDX guest the same
     /// path yields a TDX quote rather than an SEV-SNP report.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Io`] if a report entry cannot be created or its
+    /// `provider` attribute cannot be read.
     pub fn provider(&self) -> Result<String> {
         let entry = Entry::create(&self.root)?;
         let provider = fs::read_to_string(entry.path.join("provider"))?;
@@ -66,6 +81,11 @@ impl ConfigFs {
     }
 
     /// The lowest VMPL this guest may request a report at.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Io`] if the attribute cannot be read, or
+    /// [`Error::InvalidArgument`] if the kernel reports a non-numeric value.
     pub fn privlevel_floor(&self) -> Result<u32> {
         let entry = Entry::create(&self.root)?;
         let text = fs::read_to_string(entry.path.join("privlevel_floor"))?;
@@ -88,11 +108,11 @@ impl ConfigFs {
 
         if let Some(vmpl) = request.vmpl {
             write_attr(&entry.path.join("privlevel"), vmpl.to_string().as_bytes())?;
-            writes += 1;
+            writes = writes.saturating_add(1);
         }
 
         write_attr(&entry.path.join("inblob"), &request.data)?;
-        writes += 1;
+        writes = writes.saturating_add(1);
 
         // Reading outblob is what actually issues the guest request.
         let outblob = fs::read(entry.path.join("outblob"))?;

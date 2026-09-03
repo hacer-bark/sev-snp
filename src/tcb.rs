@@ -5,6 +5,7 @@
 //! (Milan) and Zen 4 (Genoa, Bergamo, Siena) use the legacy layout; Zen 5
 //! (Turin) and later insert an FMC security version number and shift the rest.
 
+use crate::{low_byte, widen};
 use std::fmt;
 
 /// A processor family/model/stepping triple as reported by `CPUID(1).EAX`.
@@ -24,6 +25,7 @@ pub struct Fms {
 
 impl Fms {
     /// Builds an `Fms` from its parts.
+    #[must_use]
     pub const fn new(family: u8, model: u8, stepping: u8) -> Self {
         Self {
             family,
@@ -33,32 +35,34 @@ impl Fms {
     }
 
     /// Re-encodes into the `CPUID(1).EAX` representation.
+    #[must_use]
     pub const fn to_cpuid_1_eax(self) -> u32 {
-        let (family, model, stepping) =
-            (self.family as u32, self.model as u32, self.stepping as u32);
+        let family = widen(self.family);
+        let model = widen(self.model);
         let (base_family, ext_family) = if family >= 0xF {
-            (0xF, family - 0xF)
+            (0xF, family.wrapping_sub(0xF))
         } else {
             (family, 0)
         };
-        (ext_family << 20)
-            | ((model >> 4) << 16)
-            | (base_family << 8)
-            | ((model & 0xF) << 4)
-            | (stepping & 0xF)
+        ext_family.wrapping_shl(20)
+            | model.wrapping_shr(4).wrapping_shl(16)
+            | base_family.wrapping_shl(8)
+            | (model & 0xF).wrapping_shl(4)
+            | (widen(self.stepping) & 0xF)
     }
 
     /// Decodes a `CPUID(1).EAX` value.
+    #[must_use]
     pub const fn from_cpuid_1_eax(eax: u32) -> Self {
-        let base_family = ((eax >> 8) & 0xF) as u8;
-        let ext_family = ((eax >> 20) & 0xFF) as u8;
+        let base_family = low_byte(eax.wrapping_shr(8) & 0xF);
+        let ext_family = low_byte(eax.wrapping_shr(20) & 0xFF);
         let family = if base_family == 0xF {
             base_family.wrapping_add(ext_family)
         } else {
             base_family
         };
-        let model = (((eax >> 12) & 0xF0) | ((eax >> 4) & 0xF)) as u8;
-        Self::new(family, model, (eax & 0xF) as u8)
+        let model = low_byte((eax.wrapping_shr(12) & 0xF0) | (eax.wrapping_shr(4) & 0xF));
+        Self::new(family, model, low_byte(eax & 0xF))
     }
 }
 
@@ -97,6 +101,7 @@ pub enum Product {
 
 impl Product {
     /// Identifies a product from its family/model/stepping.
+    #[must_use]
     pub const fn from_fms(fms: Fms) -> Self {
         match (fms.family, fms.model) {
             (0x19, 0x00..=0x0F) => Self::Milan,
@@ -108,6 +113,7 @@ impl Product {
     }
 
     /// The `TCB_VERSION` layout used by this product.
+    #[must_use]
     pub const fn tcb_layout(self) -> TcbLayout {
         match self {
             Self::Milan | Self::Genoa | Self::Bergamo => TcbLayout::Legacy,
@@ -128,6 +134,7 @@ impl Product {
     ///
     /// Returns `None` for parts this crate cannot name, since guessing a KDS
     /// path would produce a silently wrong certificate lookup.
+    #[must_use]
     pub const fn kds_name(self) -> Option<&'static str> {
         match self {
             Self::Milan => Some("Milan"),
@@ -168,16 +175,19 @@ pub struct TcbVersion(u64);
 
 impl TcbVersion {
     /// Wraps a raw `TCB_VERSION`.
+    #[must_use]
     pub const fn from_raw(raw: u64) -> Self {
         Self(raw)
     }
 
     /// The underlying 64-bit value.
+    #[must_use]
     pub const fn raw(self) -> u64 {
         self.0
     }
 
     /// Splits the value into named security version numbers.
+    #[must_use]
     pub const fn decode(self, product: Product) -> TcbParts {
         let b = self.0.to_le_bytes();
         match product.tcb_layout() {
@@ -225,6 +235,7 @@ impl TcbParts {
     ///
     /// `fmc` is written only when the layout has a slot for it, so a value set
     /// on a legacy part is dropped rather than corrupting the bootloader field.
+    #[must_use]
     pub const fn encode(self, product: Product) -> TcbVersion {
         let bytes = match product.tcb_layout() {
             TcbLayout::Legacy => [

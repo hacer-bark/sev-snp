@@ -6,6 +6,9 @@ use sev_snp::{
     TcbVersion,
 };
 
+/// Anything a test can fail with.
+type Fallible = Result<(), Box<dyn std::error::Error>>;
+
 /// A version 5 report captured from a Milan (Zen 3) guest.
 ///
 /// It exercises the interesting combination: the newest report layout on the
@@ -14,8 +17,8 @@ use sev_snp::{
 const MILAN_V5: &[u8] = include_bytes!("data/report-v5-milan.bin");
 
 #[test]
-fn parses_a_real_v5_report_from_a_zen3_machine() {
-    let report = AttestationReport::parse(MILAN_V5).expect("golden report parses");
+fn parses_a_real_v5_report_from_a_zen3_machine() -> Fallible {
+    let report = AttestationReport::parse(MILAN_V5)?;
 
     assert_eq!(report.version(), 5);
     assert_eq!(report.vmpl(), 0);
@@ -25,7 +28,9 @@ fn parses_a_real_v5_report_from_a_zen3_machine() {
     // Zen 3, and the version 5 layout still decodes the legacy TCB fields.
     assert_eq!(report.cpuid_fms(), Some(Fms::new(0x19, 0x01, 0x01)));
     assert_eq!(report.product(), Some(Product::Milan));
-    let tcb = report.reported_tcb_parts().expect("v3+ carries CPUID");
+    let tcb = report
+        .reported_tcb_parts()
+        .ok_or("v3+ should carry CPUID")?;
     assert_eq!(tcb.fmc, None, "Zen 3 has no FMC field");
     assert_eq!(
         (tcb.bootloader, tcb.tee, tcb.snp, tcb.microcode),
@@ -49,25 +54,34 @@ fn parses_a_real_v5_report_from_a_zen3_machine() {
     // The signature covers everything before it, and decodes to two P-384
     // scalars rather than the 72-byte little-endian fields on the wire.
     assert_eq!(report.signed_bytes().len(), 0x2A0);
-    let sig = report.ecdsa_signature().expect("ECDSA report");
-    assert_ne!(sig.r_be(), [0u8; 48]);
-    assert_ne!(sig.s_be(), [0u8; 48]);
-    assert_eq!(sig.r_be()[47], report.signature()[0], "r is byte-reversed");
+    let signature = report.ecdsa_signature().ok_or("report should be ECDSA")?;
+    assert_ne!(signature.r_be(), [0u8; 48]);
+    assert_ne!(signature.s_be(), [0u8; 48]);
+    assert_eq!(
+        signature.r_be().last(),
+        report.signature().first(),
+        "r is byte-reversed on the wire"
+    );
+    Ok(())
 }
 
 #[test]
-fn report_rejects_short_and_ancient_inputs() {
-    assert!(AttestationReport::parse(&MILAN_V5[..1183]).is_err());
+fn report_rejects_short_and_ancient_inputs() -> Fallible {
+    let truncated = MILAN_V5.get(..AttestationReport::SIZE - 1).ok_or("short")?;
+    assert!(AttestationReport::parse(truncated).is_err());
 
-    let mut v1 = MILAN_V5.to_vec();
-    v1[0..4].copy_from_slice(&1u32.to_le_bytes());
-    assert!(AttestationReport::parse(&v1).is_err());
+    let mut version_1 = MILAN_V5.to_vec();
+    for (slot, byte) in version_1.iter_mut().zip(1u32.to_le_bytes()) {
+        *slot = byte;
+    }
+    assert!(AttestationReport::parse(&version_1).is_err());
+    Ok(())
 }
 
 #[test]
 fn tcb_version_round_trips_on_every_generation() {
-    let mut rng = rand::rng();
-    let svns: [u8; 5] = rng.random();
+    let svns: [u8; 5] = rand::rng().random();
+    let [fmc, bootloader, tee, snp, microcode] = svns;
 
     for product in [
         Product::Milan,
@@ -75,13 +89,12 @@ fn tcb_version_round_trips_on_every_generation() {
         Product::Bergamo,
         Product::Turin,
     ] {
-        let has_fmc = product == Product::Turin;
         let parts = TcbParts {
-            fmc: has_fmc.then_some(svns[0]),
-            bootloader: svns[1],
-            tee: svns[2],
-            snp: svns[3],
-            microcode: svns[4],
+            fmc: (product == Product::Turin).then_some(fmc),
+            bootloader,
+            tee,
+            snp,
+            microcode,
         };
         assert_eq!(parts.encode(product).decode(product), parts, "{product}");
     }
@@ -107,30 +120,34 @@ fn fms_round_trips_through_cpuid_encoding() {
 }
 
 #[test]
-fn cert_table_reads_entries_and_rejects_out_of_bounds_offsets() {
+fn cert_table_reads_entries_and_rejects_out_of_bounds_offsets() -> Fallible {
     const VCEK: [u8; 16] = [
         0x63, 0xda, 0x75, 0x8d, 0xe6, 0x64, 0x45, 0x64, 0xad, 0xc5, 0xf4, 0xb9, 0x3b, 0xe8, 0xac,
         0xcd,
     ];
-    let mut rng = rand::rng();
-    let body: [u8; 64] = rng.random();
+    /// One entry plus the all-zero terminator.
+    const BODY_OFFSET: u32 = 48;
 
-    // One entry, a zero terminator, then the certificate body.
+    let body: [u8; 64] = rand::rng().random();
+
     let mut blob = Vec::new();
     blob.extend_from_slice(&VCEK);
-    blob.extend_from_slice(&48u32.to_le_bytes()); // offset
-    blob.extend_from_slice(&(body.len() as u32).to_le_bytes());
+    blob.extend_from_slice(&BODY_OFFSET.to_le_bytes());
+    blob.extend_from_slice(&u32::try_from(body.len())?.to_le_bytes());
     blob.extend_from_slice(&[0u8; 24]);
     blob.extend_from_slice(&body);
 
-    let table = CertTable::parse(&blob).expect("well-formed table");
-    let vcek = table.get(CertKind::Vcek).expect("VCEK present");
+    let table = CertTable::parse(&blob)?;
+    let vcek = table.get(CertKind::Vcek).ok_or("VCEK should be present")?;
     assert_eq!(vcek.data(), body);
 
     // An offset past the end of the blob must not be readable.
     let mut bad = blob.clone();
-    bad[16..20].copy_from_slice(&9999u32.to_le_bytes());
+    for (slot, byte) in bad.iter_mut().skip(16).zip(9999u32.to_le_bytes()) {
+        *slot = byte;
+    }
     assert!(CertTable::parse(&bad).is_err());
 
-    assert!(CertTable::parse(&[]).expect("empty is legal").is_empty());
+    assert!(CertTable::parse(&[])?.is_empty());
+    Ok(())
 }

@@ -207,6 +207,7 @@ pub enum FirmwareError {
 
 impl FirmwareError {
     /// Interprets a raw firmware status code.
+    #[must_use]
     pub const fn from_raw(code: u32) -> Self {
         match code {
             0x01 => Self::InvalidPlatformState,
@@ -296,6 +297,7 @@ pub enum VmmError {
 
 impl VmmError {
     /// Interprets a raw VMM status code.
+    #[must_use]
     pub const fn from_raw(code: u32) -> Self {
         match code {
             1 => Self::InvalidLen,
@@ -355,9 +357,10 @@ impl fmt::Display for ParseError {
 impl std::error::Error for ParseError {}
 
 /// Splits a raw `EXITINFO2` value into its VMM and firmware halves.
-pub(crate) fn from_exitinfo2(exitinfo2: u64) -> Option<Error> {
-    let fw = (exitinfo2 & 0xFFFF_FFFF) as u32;
-    let vmm = (exitinfo2 >> 32) as u32;
+pub(crate) const fn from_exitinfo2(exitinfo2: u64) -> Option<Error> {
+    let [f0, f1, f2, f3, v0, v1, v2, v3] = exitinfo2.to_le_bytes();
+    let fw = u32::from_le_bytes([f0, f1, f2, f3]);
+    let vmm = u32::from_le_bytes([v0, v1, v2, v3]);
     match (vmm, fw) {
         (0, 0) => None,
         (0, fw) => Some(Error::Firmware(FirmwareError::from_raw(fw))),

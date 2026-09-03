@@ -74,45 +74,53 @@ impl KeyFields {
     pub const NONE: Self = Self(0);
 
     /// The raw `GUEST_FIELD_SELECT` value.
+    #[must_use]
     pub const fn raw(self) -> u64 {
         self.0
     }
 
     /// The guest launch policy is mixed in.
+    #[must_use]
     pub const fn guest_policy(self) -> bool {
         self.bit(0)
     }
     /// The guest image ID is mixed in.
+    #[must_use]
     pub const fn image_id(self) -> bool {
         self.bit(1)
     }
     /// The guest family ID is mixed in.
+    #[must_use]
     pub const fn family_id(self) -> bool {
         self.bit(2)
     }
     /// The launch measurement is mixed in.
+    #[must_use]
     pub const fn measurement(self) -> bool {
         self.bit(3)
     }
     /// The guest security version number is mixed in.
+    #[must_use]
     pub const fn guest_svn(self) -> bool {
         self.bit(4)
     }
     /// The TCB version is mixed in.
+    #[must_use]
     pub const fn tcb_version(self) -> bool {
         self.bit(5)
     }
     /// The launch mitigation vector is mixed in.
+    #[must_use]
     pub const fn launch_mit_vector(self) -> bool {
         self.bit(6)
     }
 
-    const fn bit(self, n: u32) -> bool {
-        self.0 & (1 << n) != 0
+    const fn bit(self, index: u32) -> bool {
+        self.0.wrapping_shr(index) & 1 == 1
     }
 
-    const fn with(self, n: u32) -> Self {
-        Self(self.0 | (1 << n))
+    const fn with(self, index: u32) -> Self {
+        Self(self.0 | 1_u64.wrapping_shl(index))
     }
 }
 
@@ -139,6 +147,7 @@ impl KeyRequest {
     pub const MAX_VMPL: u32 = 3;
 
     /// A request deriving from the chip-unique VCEK with nothing mixed in.
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             root_key: RootKey::Vcek,
@@ -151,6 +160,7 @@ impl KeyRequest {
     }
 
     /// Selects the root secret. Defaults to [`RootKey::Vcek`].
+    #[must_use]
     pub const fn root_key(mut self, root: RootKey) -> Self {
         self.root_key = root;
         self
@@ -161,24 +171,28 @@ impl KeyRequest {
     /// Must be at or below the caller's own privilege level; a guest running at
     /// VMPL 2 cannot derive the key a VMPL 0 component would get. Values above
     /// [`Self::MAX_VMPL`] are rejected when the request is issued.
+    #[must_use]
     pub const fn vmpl(mut self, vmpl: u32) -> Self {
         self.vmpl = vmpl;
         self
     }
 
     /// Binds the key to the guest launch policy.
+    #[must_use]
     pub const fn bind_guest_policy(mut self) -> Self {
         self.fields = self.fields.with(0);
         self
     }
 
     /// Binds the key to the guest image ID from the ID block.
+    #[must_use]
     pub const fn bind_image_id(mut self) -> Self {
         self.fields = self.fields.with(1);
         self
     }
 
     /// Binds the key to the guest family ID from the ID block.
+    #[must_use]
     pub const fn bind_family_id(mut self) -> Self {
         self.fields = self.fields.with(2);
         self
@@ -188,6 +202,7 @@ impl KeyRequest {
     ///
     /// The single most useful binding: the key changes if anything in the
     /// initial memory image changes.
+    #[must_use]
     pub const fn bind_measurement(mut self) -> Self {
         self.fields = self.fields.with(3);
         self
@@ -197,6 +212,7 @@ impl KeyRequest {
     ///
     /// Must not exceed the SVN in the ID block the guest launched with, which
     /// is how it works as an anti-rollback ratchet.
+    #[must_use]
     pub const fn bind_guest_svn(mut self, svn: u32) -> Self {
         self.fields = self.fields.with(4);
         self.guest_svn = svn;
@@ -208,6 +224,7 @@ impl KeyRequest {
     /// Must not exceed [`AttestationReport::committed_tcb`](crate::AttestationReport::committed_tcb).
     /// Passing [`AttestationReport::reported_tcb`](crate::AttestationReport::reported_tcb)
     /// makes the key invalid after any firmware downgrade.
+    #[must_use]
     pub const fn bind_tcb(mut self, tcb: TcbVersion) -> Self {
         self.fields = self.fields.with(5);
         self.tcb_version = tcb.raw();
@@ -222,6 +239,7 @@ impl KeyRequest {
     /// zero vector comes back instead — with no error. Use
     /// [`AttestationReport::launch_mit_vector`](crate::AttestationReport::launch_mit_vector)
     /// to confirm the platform reports one at all before relying on this.
+    #[must_use]
     pub const fn bind_launch_mit_vector(mut self, vector: u64) -> Self {
         self.fields = self.fields.with(6);
         self.launch_mit_vector = vector;
@@ -229,16 +247,18 @@ impl KeyRequest {
     }
 
     /// The fields this request binds.
+    #[must_use]
     pub const fn fields(&self) -> KeyFields {
         self.fields
     }
 
     /// The root secret this request derives from.
+    #[must_use]
     pub const fn selected_root_key(&self) -> RootKey {
         self.root_key
     }
 
-    pub(crate) fn validate(&self) -> Result<()> {
+    pub(crate) const fn validate(&self) -> Result<()> {
         if self.vmpl > Self::MAX_VMPL {
             return Err(Error::InvalidArgument("vmpl must be 0..=3"));
         }
@@ -251,14 +271,24 @@ impl KeyRequest {
     /// mitigation vector appended in firmware 1.58. Kernels predating that
     /// field copy only the first 32 bytes and ignore the rest.
     pub(crate) fn to_wire(self) -> [u8; 40] {
+        // Field order per `struct snp_derived_key_req`, with the reserved word
+        // after the root key selector.
+        let fields = self
+            .root_key
+            .as_raw()
+            .to_le_bytes()
+            .into_iter()
+            .chain([0u8; 4])
+            .chain(self.fields.raw().to_le_bytes())
+            .chain(self.vmpl.to_le_bytes())
+            .chain(self.guest_svn.to_le_bytes())
+            .chain(self.tcb_version.to_le_bytes())
+            .chain(self.launch_mit_vector.to_le_bytes());
+
         let mut out = [0u8; 40];
-        out[0..4].copy_from_slice(&self.root_key.as_raw().to_le_bytes());
-        // out[4..8] is the reserved word, left zero.
-        out[8..16].copy_from_slice(&self.fields.raw().to_le_bytes());
-        out[16..20].copy_from_slice(&self.vmpl.to_le_bytes());
-        out[20..24].copy_from_slice(&self.guest_svn.to_le_bytes());
-        out[24..32].copy_from_slice(&self.tcb_version.to_le_bytes());
-        out[32..40].copy_from_slice(&self.launch_mit_vector.to_le_bytes());
+        for (dst, byte) in out.iter_mut().zip(fields) {
+            *dst = byte;
+        }
         out
     }
 }
@@ -275,12 +305,13 @@ impl DerivedKey {
     /// Length of a derived key in bytes.
     pub const LEN: usize = 32;
 
-    pub(crate) fn from_bytes(bytes: [u8; Self::LEN]) -> Self {
+    pub(crate) const fn from_bytes(bytes: [u8; Self::LEN]) -> Self {
         Self(bytes)
     }
 
     /// The key material.
-    pub fn as_bytes(&self) -> &[u8; Self::LEN] {
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; Self::LEN] {
         &self.0
     }
 
@@ -307,14 +338,23 @@ impl fmt::Debug for DerivedKey {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bytes_at;
     use rand::RngExt;
+
+    fn le32(buf: &[u8], offset: usize) -> Option<u32> {
+        crate::u32_at(buf, offset)
+    }
+
+    fn le64(buf: &[u8], offset: usize) -> Option<u64> {
+        bytes_at::<8>(buf, offset).map(u64::from_le_bytes)
+    }
 
     #[test]
     fn bindings_serialise_to_the_firmware_layout() {
         let mut rng = rand::rng();
         let (svn, tcb, mit): (u32, u64, u64) = (rng.random(), rng.random(), rng.random());
 
-        let req = KeyRequest::new()
+        let request = KeyRequest::new()
             .root_key(RootKey::Vmrk)
             .vmpl(2)
             .bind_measurement()
@@ -323,23 +363,20 @@ mod tests {
             .bind_tcb(TcbVersion::from_raw(tcb))
             .bind_launch_mit_vector(mit);
 
-        let f = req.fields();
-        assert!(f.measurement() && f.guest_policy() && f.guest_svn() && f.tcb_version());
-        assert!(f.launch_mit_vector());
-        assert!(!f.image_id() && !f.family_id());
+        let selected = request.fields();
+        assert!(selected.measurement() && selected.guest_policy());
+        assert!(selected.guest_svn() && selected.tcb_version());
+        assert!(selected.launch_mit_vector());
+        assert!(!selected.image_id() && !selected.family_id());
 
-        let w = req.to_wire();
-        assert_eq!(u32::from_le_bytes(w[0..4].try_into().unwrap()), 1, "VMRK");
-        assert_eq!(
-            u32::from_le_bytes(w[4..8].try_into().unwrap()),
-            0,
-            "reserved"
-        );
-        assert_eq!(u64::from_le_bytes(w[8..16].try_into().unwrap()), f.raw());
-        assert_eq!(u32::from_le_bytes(w[16..20].try_into().unwrap()), 2);
-        assert_eq!(u32::from_le_bytes(w[20..24].try_into().unwrap()), svn);
-        assert_eq!(u64::from_le_bytes(w[24..32].try_into().unwrap()), tcb);
-        assert_eq!(u64::from_le_bytes(w[32..40].try_into().unwrap()), mit);
+        let wire = request.to_wire();
+        assert_eq!(le32(&wire, 0), Some(1), "VMRK selector");
+        assert_eq!(le32(&wire, 4), Some(0), "reserved word");
+        assert_eq!(le64(&wire, 8), Some(selected.raw()));
+        assert_eq!(le32(&wire, 16), Some(2), "vmpl");
+        assert_eq!(le32(&wire, 20), Some(svn));
+        assert_eq!(le64(&wire, 24), Some(tcb));
+        assert_eq!(le64(&wire, 32), Some(mit));
     }
 
     #[test]

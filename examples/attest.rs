@@ -9,7 +9,11 @@ fn main() -> Result<(), sev_snp::Error> {
     match detect::capabilities() {
         Some(c) => println!(
             "capabilities: sev={} sev_es={} sev_snp={} vmpls={} c_bit={}",
-            c.sev, c.sev_es, c.sev_snp, c.num_vmpls, c.c_bit_position
+            c.sev(),
+            c.sev_es(),
+            c.sev_snp(),
+            c.num_vmpls(),
+            c.c_bit_position()
         ),
         None => println!("capabilities: CPUID leaf 0x8000001F absent"),
     }
@@ -25,7 +29,7 @@ fn main() -> Result<(), sev_snp::Error> {
     // A fresh nonce is what makes the report non-replayable.
     let nonce: [u8; 64] = rand::rng().random();
     let report = fw.report(&nonce)?;
-    assert_eq!(report.report_data(), &nonce, "report is bound to our nonce");
+    assert_eq!(report.report_data(), nonce, "report is bound to our nonce");
 
     println!("\n{report:#?}");
     if let Some(parts) = report.reported_tcb_parts() {

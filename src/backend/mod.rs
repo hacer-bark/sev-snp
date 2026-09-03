@@ -45,6 +45,7 @@ pub struct ReportRequest {
 
 impl ReportRequest {
     /// A request with all-zero report data at the guest's own VMPL.
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             data: [0u8; 64],
@@ -53,6 +54,7 @@ impl ReportRequest {
     }
 
     /// Sets the 64 bytes bound into the report.
+    #[must_use]
     pub const fn data(mut self, data: [u8; 64]) -> Self {
         self.data = data;
         self
@@ -62,17 +64,20 @@ impl ReportRequest {
     ///
     /// Must be at or above the caller's own privilege level. Leaving this unset
     /// lets the kernel use its default, which is the level the guest runs at.
+    #[must_use]
     pub const fn vmpl(mut self, vmpl: u32) -> Self {
         self.vmpl = Some(vmpl);
         self
     }
 
     /// The report data this request carries.
+    #[must_use]
     pub const fn report_data(&self) -> &[u8; 64] {
         &self.data
     }
 
     /// The VMPL this request targets, if one was set explicitly.
+    #[must_use]
     pub const fn requested_vmpl(&self) -> Option<u32> {
         self.vmpl
     }
@@ -106,16 +111,38 @@ pub trait GuestBackend: std::fmt::Debug + Send + Sync {
     fn transport(&self) -> Transport;
 
     /// Requests a signed attestation report.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Firmware`](crate::Error::Firmware) or
+    /// [`Error::Vmm`](crate::Error::Vmm) if the request was rejected,
+    /// [`Error::Io`](crate::Error::Io) if the kernel call failed, or
+    /// [`Error::Parse`](crate::Error::Parse) if the response was malformed.
     fn report(&self, request: &ReportRequest) -> Result<AttestationReport>;
 
     /// Requests a report together with the host-provisioned certificate chain.
+    ///
+    /// # Errors
+    ///
+    /// As [`report`](Self::report), and additionally
+    /// [`Error::Parse`](crate::Error::Parse) if the certificate table does not
+    /// describe bodies that lie within the blob the host returned.
     fn extended_report(&self, request: &ReportRequest) -> Result<ExtendedReport>;
 
     /// Derives a key from a chip-held root secret.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Unsupported`](crate::Error::Unsupported) on a transport
+    /// without a key derivation interface,
+    /// [`Error::InvalidArgument`](crate::Error::InvalidArgument) for a VMPL
+    /// outside `0..=3`, or [`Error::Firmware`](crate::Error::Firmware) if the
+    /// secure processor rejected the binding.
     fn derive_key(&self, request: &KeyRequest) -> Result<DerivedKey>;
 }
 
 /// Whether any usable guest interface exists on this system.
+#[must_use]
 pub fn any_available() -> bool {
     configfs::available() || ioctl::available()
 }

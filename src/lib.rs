@@ -73,9 +73,10 @@
 //! everything a report says as unverified until you have done that.
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
-#![deny(missing_docs)]
-#![deny(unsafe_op_in_unsafe_fn)]
-#![warn(clippy::undocumented_unsafe_blocks)]
+
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
 
 pub mod backend;
 pub mod certs;
@@ -115,6 +116,10 @@ impl Firmware {
     /// normally means this is not an SEV-SNP guest. Opening `/dev/sev-guest`
     /// requires root; if that fails but configfs works, this still succeeds and
     /// only [`derive_key`](Self::derive_key) is unavailable.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NoBackend`] if neither transport could be opened.
     pub fn open() -> Result<Self> {
         let configfs = ConfigFs::open().ok();
         let ioctl = SevGuest::open().ok();
@@ -129,6 +134,11 @@ impl Firmware {
     /// Use this when a specific interface is required — for instance to insist
     /// on [`Transport::Ioctl`] so that firmware status codes survive, rather
     /// than being collapsed into an `errno` by configfs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NoBackend`] or [`Error::Io`] if the requested transport
+    /// is absent or cannot be opened.
     pub fn open_with(transport: Transport) -> Result<Self> {
         match transport {
             Transport::ConfigFs => Ok(Self {
@@ -143,6 +153,7 @@ impl Firmware {
     }
 
     /// Which transport reports will be fetched from.
+    #[must_use]
     pub fn transport(&self) -> Transport {
         self.report_backend().transport()
     }
@@ -151,7 +162,8 @@ impl Firmware {
     ///
     /// False when only configfs could be opened, which usually means the
     /// process lacks the privileges for `/dev/sev-guest`.
-    pub fn can_derive_keys(&self) -> bool {
+    #[must_use]
+    pub const fn can_derive_keys(&self) -> bool {
         self.ioctl.is_some()
     }
 
@@ -161,11 +173,19 @@ impl Firmware {
     /// the report to a challenge: put a verifier-supplied nonce there, or a
     /// hash of a public key you want the report to endorse. All-zero data
     /// produces a valid but replayable report.
+    ///
+    /// # Errors
+    ///
+    /// See [`GuestBackend::report`].
     pub fn report(&self, report_data: &[u8; 64]) -> Result<AttestationReport> {
         self.report_with(&ReportRequest::from(report_data))
     }
 
     /// Requests a report with full control over the request.
+    ///
+    /// # Errors
+    ///
+    /// See [`GuestBackend::report`].
     pub fn report_with(&self, request: &ReportRequest) -> Result<AttestationReport> {
         self.report_backend().report(request)
     }
@@ -175,11 +195,19 @@ impl Firmware {
     /// The chain is frequently empty: hosts are not required to provision one,
     /// in which case it must be fetched from AMD's Key Distribution Service
     /// instead. [`CertTable::is_empty`] tells you which case you are in.
+    ///
+    /// # Errors
+    ///
+    /// See [`GuestBackend::extended_report`].
     pub fn extended_report(&self, report_data: &[u8; 64]) -> Result<ExtendedReport> {
         self.extended_report_with(&ReportRequest::from(report_data))
     }
 
     /// Requests an extended report with full control over the request.
+    ///
+    /// # Errors
+    ///
+    /// See [`GuestBackend::extended_report`].
     pub fn extended_report_with(&self, request: &ReportRequest) -> Result<ExtendedReport> {
         self.report_backend().extended_report(request)
     }
@@ -188,6 +216,10 @@ impl Firmware {
     ///
     /// Requires the `/dev/sev-guest` transport; see [`can_derive_keys`](Self::can_derive_keys).
     /// The [`key`] module explains what the request can bind the key to.
+    ///
+    /// # Errors
+    ///
+    /// See [`GuestBackend::derive_key`].
     pub fn derive_key(&self, request: &KeyRequest) -> Result<DerivedKey> {
         let ioctl = self.ioctl.as_ref().ok_or(Error::Unsupported(
             "key derivation needs /dev/sev-guest, which is not open",
@@ -204,4 +236,33 @@ impl Firmware {
             (None, None) => unreachable!("Firmware is never constructed without a backend"),
         }
     }
+}
+
+// Small total helpers for reading fixed-width fields out of firmware buffers.
+// They live at the crate root, private, so every module can reach them without
+// a visibility qualifier: nothing here is part of the public API. All are free
+// of panicking operations — no indexing, no unchecked arithmetic, no `unwrap`.
+
+/// Narrows a value that the caller has already masked to eight bits or fewer.
+///
+/// `u8::try_from` is not callable from a `const fn`, and taking the low byte of
+/// an already-masked value is exact.
+const fn low_byte(masked: u32) -> u8 {
+    let [byte, _, _, _] = masked.to_le_bytes();
+    byte
+}
+
+/// Widens a byte to `u32` without an `as` cast, callable from a `const fn`.
+const fn widen(byte: u8) -> u32 {
+    u32::from_le_bytes([byte, 0, 0, 0])
+}
+
+/// Copies `N` bytes starting at `offset`, or `None` if the buffer is too short.
+fn bytes_at<const N: usize>(buf: &[u8], offset: usize) -> Option<[u8; N]> {
+    buf.get(offset..)?.first_chunk::<N>().copied()
+}
+
+/// Reads a little-endian `u32` at `offset`.
+fn u32_at(buf: &[u8], offset: usize) -> Option<u32> {
+    bytes_at::<4>(buf, offset).map(u32::from_le_bytes)
 }
