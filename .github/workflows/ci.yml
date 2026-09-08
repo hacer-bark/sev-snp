@@ -1,0 +1,116 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  checks:
+    name: fmt / clippy / msrv / audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-rust
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - name: rustfmt
+        run: cargo fmt --all --check
+      - name: cargo-audit
+        run: cargo audit
+      - name: clippy (default — both transports)
+        run: cargo clippy --locked --all-targets
+      - name: clippy (forbid(unsafe_code) build, configfs only)
+        run: cargo clippy --locked --all-targets --no-default-features --features configfs
+      - name: clippy (sev-guest only)
+        run: cargo clippy --locked --all-targets --no-default-features --features sev-guest
+      - name: no backend selected is a compile error
+        run: |
+          if cargo check --locked --lib --no-default-features 2>/dev/null; then
+            echo "selecting no transport should not compile"
+            exit 1
+          fi
+      - uses: dtolnay/rust-toolchain@1.87
+      - name: msrv (1.87)
+        run: cargo +1.87 check --locked --all-features --all-targets
+
+  test:
+    name: "test (${{ matrix.name }})"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: default — both transports
+          - name: configfs only (no dependencies, no unsafe)
+            flags: --no-default-features --features configfs
+          - name: sev-guest only
+            flags: --no-default-features --features sev-guest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-rust
+          key: ${{ matrix.name }}
+      - name: test
+        run: cargo test --locked ${{ matrix.flags }}
+
+  cross:
+    name: check (aarch64 — the non-x86 detect path)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-rust
+          key: aarch64
+      - name: check lib on aarch64-unknown-linux-gnu
+        run: cargo check --locked --lib --target aarch64-unknown-linux-gnu
+
+  docs:
+    name: rustdoc (as docs.rs builds it)
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: --cfg docsrs -D warnings
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-rust
+          key: docs
+      - run: cargo +nightly doc --locked --all-features --no-deps
+
+  package:
+    name: publish dry run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-rust
+          key: package
+      - run: cargo publish --locked --dry-run

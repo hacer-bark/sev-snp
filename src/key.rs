@@ -30,8 +30,6 @@
 //! # Ok::<_, sev_snp::Error>(())
 //! ```
 
-// `validate` is the only consumer, and it is gated with the wire format.
-#[cfg(any(feature = "sev-guest", test))]
 use crate::error::{Error, Result};
 use crate::tcb::TcbVersion;
 use std::fmt;
@@ -55,9 +53,6 @@ pub enum RootKey {
 }
 
 impl RootKey {
-    // Only the ioctl transport serialises requests; a configfs-only build
-    // never reaches the wire format, but the tests still cover it.
-    #[cfg(any(feature = "sev-guest", test))]
     const fn as_raw(self) -> u32 {
         match self {
             Self::Vcek => 0,
@@ -263,9 +258,6 @@ impl KeyRequest {
         self.root_key
     }
 
-    // Only the ioctl transport serialises requests; a configfs-only build
-    // never reaches the wire format, but the tests still cover it.
-    #[cfg(any(feature = "sev-guest", test))]
     pub(crate) const fn validate(&self) -> Result<()> {
         if self.vmpl > Self::MAX_VMPL {
             return Err(Error::InvalidArgument("vmpl must be 0..=3"));
@@ -278,9 +270,6 @@ impl KeyRequest {
     /// 40 bytes are produced: the 32 the original ABI defined, plus the
     /// mitigation vector appended in firmware 1.58. Kernels predating that
     /// field copy only the first 32 bytes and ignore the rest.
-    // Only the ioctl transport serialises requests; a configfs-only build
-    // never reaches the wire format, but the tests still cover it.
-    #[cfg(any(feature = "sev-guest", test))]
     pub(crate) fn to_wire(self) -> [u8; 40] {
         // Field order per `struct snp_derived_key_req`, with the reserved word
         // after the root key selector.
@@ -316,9 +305,6 @@ impl DerivedKey {
     /// Length of a derived key in bytes.
     pub const LEN: usize = 32;
 
-    // Only the ioctl transport serialises requests; a configfs-only build
-    // never reaches the wire format, but the tests still cover it.
-    #[cfg(any(feature = "sev-guest", test))]
     pub(crate) const fn from_bytes(bytes: [u8; Self::LEN]) -> Self {
         Self(bytes)
     }

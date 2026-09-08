@@ -11,12 +11,13 @@ repository = "https://github.com/hacer-bark/sev-snp"
 documentation = "https://docs.rs/sev-snp"
 categories = ["api-bindings", "cryptography", "hardware-support"]
 keywords = ["sev", "snp", "attestation", "amd", "confidential-computing"]
+exclude = [".github/"]
 
+# The guest interface is a Linux kernel API, so the crate is Linux-only: the
+# `sev-guest` transport needs `libc::ioctl` and `std::os::fd` outright.
 [dependencies]
-zeroize = { version = "1", default-features = false, optional = true }
-
-[target.'cfg(target_os = "linux")'.dependencies]
 libc = { version = "0.2", optional = true }
+zeroize = { version = "1", default-features = false, optional = true }
 
 [dev-dependencies]
 rand = "0.10"
@@ -63,3 +64,8 @@ as_conversions = "deny"
 [lints.rustdoc]
 all = "deny"
 broken_intra_doc_links = "deny"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+targets = ["x86_64-unknown-linux-gnu"]

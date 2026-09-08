@@ -47,11 +47,13 @@ pub enum CertKind {
     Ask,
     /// AMD Root Key.
     Ark,
-    /// AMD SEV VLEK signing key, intermediate above the VLEK.
-    Asvk,
     /// Extra host-supplied platform information, not a certificate.
     ExtraPlatformInfo,
-    /// A GUID this crate does not recognise.
+    /// A GUID this crate does not have a name for.
+    ///
+    /// The entry is still returned with its body intact; read the raw GUID
+    /// from [`Certificate::guid`]. Hosts occasionally provision entries beyond
+    /// the chain named here, such as a CRL, and they arrive this way.
     Unknown,
 }
 
@@ -83,8 +85,8 @@ const EXTRA_PLATFORM_INFO_GUID: [u8; 16] = [
 impl CertKind {
     /// Identifies an entry by its GUID.
     ///
-    /// The all-zero GUID would be the ASVK, but it is also the table
-    /// terminator, so it never reaches here: [`CertTable::parse`] stops first.
+    /// The all-zero GUID never reaches here: it terminates the table, and
+    /// [`CertTable::parse`] stops on it first.
     const fn from_guid(guid: [u8; 16]) -> Self {
         match guid {
             VCEK_GUID => Self::Vcek,

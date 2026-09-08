@@ -111,13 +111,9 @@ impl ConfigFs {
     pub fn privlevel_floor(&self) -> Result<u32> {
         let entry = Entry::create(&self.root)?;
         let text = fs::read_to_string(entry.path.join("privlevel_floor"))?;
-        text.trim().parse().map_err(|_| {
-            Error::Parse(crate::error::ParseError::TooShort {
-                what: "privlevel_floor",
-                need: 1,
-                got: 0,
-            })
-        })
+        text.trim()
+            .parse()
+            .map_err(|_| Error::InvalidArgument("privlevel_floor is not a number"))
     }
 
     /// Runs one request, returning the report and certificate blobs.

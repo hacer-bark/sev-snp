@@ -1,5 +1,11 @@
 # sev-snp
 
+[![CI](https://github.com/hacer-bark/sev-snp/actions/workflows/ci.yml/badge.svg)](https://github.com/hacer-bark/sev-snp/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/sev-snp.svg)](https://crates.io/crates/sev-snp)
+[![docs.rs](https://img.shields.io/docsrs/sev-snp)](https://docs.rs/sev-snp)
+[![license](https://img.shields.io/crates/l/sev-snp.svg)](https://github.com/hacer-bark/sev-snp/blob/main/LICENSE)
+[![msrv](https://img.shields.io/badge/msrv-1.87-blue.svg)](https://releases.rs/docs/1.87.0/)
+
 Safe Rust bindings for the Linux AMD SEV-SNP guest API.
 
 Inside an SEV-SNP virtual machine, the AMD secure processor will sign statements
@@ -82,22 +88,6 @@ dependencies disappear, and the crate is built under
 unsafe code" is therefore checked by the compiler rather than asserted here.
 That build cannot derive keys: the kernel exposes key derivation only through
 the ioctl.
-
-## Portability
-
-One code path covers Zen 3 through Zen 5. Report versions 2 to 5 parse
-identically; fields introduced later return `Option`. `TcbVersion` keeps its raw
-value and decodes per product, so Zen 5's FMC field does not corrupt a Zen 3
-reading. Policy and platform bitfields expose `unknown_bits()` rather than
-failing on a bit from newer firmware.
-
-## Trust boundary
-
-A report is evidence only once its signature has been checked against AMD's
-certificate chain and the freshness of `report_data` confirmed. This crate
-obtains and parses reports; it performs no cryptographic verification and
-fetches nothing from the network, so the verifying party can be a different
-machine running code of its own choosing.
 
 ## License
 
