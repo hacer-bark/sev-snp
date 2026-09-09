@@ -10,7 +10,7 @@ license = "0BSD"
 repository = "https://github.com/hacer-bark/sev-snp"
 documentation = "https://docs.rs/sev-snp"
 categories = ["api-bindings", "cryptography", "hardware-support"]
-keywords = ["sev", "snp", "attestation", "amd", "confidential-computing"]
+keywords = ["sev", "snp", "attestation", "amd"]
 exclude = [".github/"]
 
 # The guest interface is a Linux kernel API, so the crate is Linux-only: the
