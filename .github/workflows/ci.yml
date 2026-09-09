@@ -48,9 +48,9 @@ jobs:
             echo "selecting no transport should not compile"
             exit 1
           fi
-      - uses: dtolnay/rust-toolchain@1.87
-      - name: msrv (1.87)
-        run: cargo +1.87 check --locked --all-features --all-targets
+      - uses: dtolnay/rust-toolchain@1.94
+      - name: msrv (1.94)
+        run: cargo +1.94 check --locked --all-features --all-targets
 
   test:
     name: "test (${{ matrix.name }})"

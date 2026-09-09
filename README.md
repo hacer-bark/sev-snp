@@ -4,7 +4,7 @@
 [![crates.io](https://img.shields.io/crates/v/sev-snp.svg)](https://crates.io/crates/sev-snp)
 [![docs.rs](https://img.shields.io/docsrs/sev-snp)](https://docs.rs/sev-snp)
 [![license](https://img.shields.io/crates/l/sev-snp.svg)](https://github.com/hacer-bark/sev-snp/blob/main/LICENSE)
-[![msrv](https://img.shields.io/badge/msrv-1.87-blue.svg)](https://releases.rs/docs/1.87.0/)
+[![msrv](https://img.shields.io/badge/msrv-1.94-blue.svg)](https://releases.rs/docs/1.94.0/)
 
 Safe Rust bindings for the Linux AMD SEV-SNP guest API.
 

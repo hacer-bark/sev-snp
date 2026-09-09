@@ -2,7 +2,7 @@
 name = "sev-snp"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.87"
+rust-version = "1.94"
 readme = "README.md"
 authors = ["Hacer-Bark <hacer.bark@proton.me>"]
 description = "Safe, complete Rust bindings for the Linux AMD SEV-SNP guest API"
