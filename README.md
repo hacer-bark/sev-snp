@@ -53,6 +53,18 @@ Plus SEV, SEV-ES and SEV-SNP capability detection through
 `CPUID(0x8000_001F)`, which is the whole of the guest-visible API for the first
 two.
 
+## vs. the `sev` crate
+
+[`sev`](https://crates.io/crates/sev) is a multi-tool: it covers both the guest
+and the verifier side, host-side launch/measurement, and certificate handling,
+which pulls in a correspondingly larger dependency tree.
+
+`sev-snp` targets one job only — a guest generating attestation reports and
+deriving keys — and is scoped to keep dependencies and surface area as small
+as that job allows. If you need to build or verify attestations outside the
+guest, `sev` is the right tool; if you're only ever the guest asking the chip
+for a report or a key, that's what this crate is for.
+
 ## Features
 
 Each transport is a cargo feature, both on by default. Turning one off compiles
